@@ -1,64 +1,75 @@
 # herdr-flash
 
-> **Status: planning.** No code yet — see [PLANNING.md](PLANNING.md) for the
-> full design. This repo exists to track the port and collect decisions
-> before implementation starts.
+> **Status: planning.** No code yet — see [PLANNING.md](PLANNING.md) for
+> the full design and [MIGRATION_FROM_ZELLIJ.md](MIGRATION_FROM_ZELLIJ.md)
+> for how this relates to the original Zellij plugin it's based on.
 
-A port of [zellij-flash](https://github.com/codingfragments/zellij-flash)
-(a [Zellij](https://zellij.dev) plugin) to run as a plugin for
-[Herdr](https://herdr.dev), a persistent terminal runtime built for AI
-coding agents.
+A [Herdr](https://herdr.dev) plugin for selecting and copying text from
+pane scrollback — with nvim-`flash`-style jump-to-word and jump-to-line
+navigation.
 
-## What it does (unchanged from the original)
+## What it does
 
-Neither Zellij nor Herdr has a built-in way to select arbitrary text from
-a terminal pane's scrollback. `herdr-flash` opens a floating view of the
-source pane's scrollback, renders it with relative line numbers, and lets
-you jump to a word or line with nvim-`flash`-style label jumps, then
-select text precisely and copy it to the clipboard or insert it directly
-into the source pane.
+Herdr has no built-in way to select arbitrary text from a terminal pane's
+scrollback. `herdr-flash` opens a floating view of the source pane's
+scrollback, renders it with relative line numbers, and lets you jump to a
+word or line with `flash`-style label jumps, then select text precisely
+and copy it to the clipboard or insert it directly into the source pane.
 
 Typical workflows:
 - Copy a URL, path, or command that scrolled past.
 - Grab a block of output for a ticket or chat message.
 - Insert a previous command back into the shell without retyping.
 
-## Why a separate repo instead of a fork
+## Build
 
-Herdr plugins are plain argv binaries talking to a JSON socket API, not WASM
-modules on the `zellij-tile` ABI. The host-integration layer is being
-rewritten from scratch; the scrollback-rendering and flash-jump navigation
-logic are being carried over from the original crate with as few changes
-as possible. See [PLANNING.md](PLANNING.md#relationship-to-the-original-repo)
-for the fork-vs-standalone decision point.
+A native Rust binary — no WASM target involved.
 
-## Relationship to the original project
+```sh
+git clone https://github.com/codingfragments/herdr-flash
+cd herdr-flash
+cargo build --release
+```
 
-| | |
-|---|---|
-| Original | [codingfragments/zellij-flash](https://github.com/codingfragments/zellij-flash) |
-| Original host | Zellij (WASM plugin, `zellij-tile` crate) |
-| This repo's host | [Herdr](https://herdr.dev) (native argv plugin, socket API) |
-| License | MIT (same as original) |
-| Rendering | `ratatui` (unchanged) |
+Supported targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`. Tagged releases
+ship prebuilt binaries for all four via GitHub Actions — see
+[PLANNING.md §9](PLANNING.md#9-ci--release-plan-github-actions).
 
-## Planned install (not yet available)
+## Install
 
-Two install paths are planned once a stable release exists — see
-[PLANNING.md](PLANNING.md#install--distribution-plan) for full detail:
+*(Not yet available — both paths below are planned; see
+[PLANNING.md §8](PLANNING.md#8-install--distribution-plan) for full
+detail.)*
 
-1. **`herdr plugin install codingfragments/herdr-flash`** — clones the
-   repo, builds from source, registers the plugin. Works on any machine
-   with a Rust toolchain.
-2. **`cargo install --git https://github.com/codingfragments/herdr-flash --tag vX.Y.Z`**
-   — installs a labeled stable release binary onto `PATH`, then a minimal
-   `herdr-plugin.toml` just references the installed binary name. No repo
-   clone or build step needed at plugin-registration time.
+**Option A — build from source via Herdr's plugin manager:**
+```sh
+herdr plugin install codingfragments/herdr-flash
+```
 
-Prebuilt binaries for macOS (arm64/x86_64) and Linux (x86_64/aarch64) will
-be attached to tagged GitHub releases via CI — see PLANNING.md for the
-GitHub Actions matrix.
+**Option B — install a labeled stable release directly onto `PATH`
+(recommended once releases exist):**
+```sh
+cargo install --git https://github.com/codingfragments/herdr-flash --tag v0.1.0
+```
+then point a minimal `herdr-plugin.toml` at the installed binary and bind
+a key to it in your Herdr config.
+
+Requires [Herdr](https://herdr.dev/install.sh) itself to be installed
+first.
+
+## Configure (planned)
+
+| Key | Default | Description |
+|---|---|---|
+| `profiles` | `"viewport,200,2000"` | Comma-separated scrollback depth profiles. `viewport` = visible area only; a number = that many scrollback lines. |
+| `size` | `"90%x85%"` | Popup dimensions as `WIDTHxHEIGHT`. Percentages or absolute cells. |
+
+## Platform support
+
+Built and tested for macOS (Apple Silicon + Intel) and Linux (x86_64 +
+aarch64). No Windows support planned.
 
 ## License
 
-MIT, matching the original `zellij-flash` project.
+MIT.
