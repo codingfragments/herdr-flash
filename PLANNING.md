@@ -131,9 +131,32 @@ Two supported install paths, both anchored on tagged GitHub releases:
 ```sh
 herdr plugin install codingfragments/herdr-flash
 ```
-Relies on the manifest's `[[build]]` step (`cargo build --release`)
-running on the user's machine. Requires a Rust toolchain locally. Good for
-tracking `main` rather than a pinned release.
+**Important — this is not automatic build detection.** Herdr does not
+inspect a cloned repo and decide "this is a Rust project, run `cargo`."
+It only runs a build step if the manifest explicitly declares one via
+`[[build]]`, e.g.:
+```toml
+[[build]]
+command = ["cargo", "build", "--release"]
+```
+`herdr plugin install` clones the repo, runs whatever `[[build]]` commands
+are declared (in order, before registration), and registers the plugin.
+If the manifest has no `[[build]]` section, install just clones and
+registers without compiling anything — so the manifest for this repo
+**must** carry the `cargo build --release` step above, and its `command`
+must point at the resulting release binary path
+(`target/release/herdr-flash`), not a bare `herdr-flash` (that only
+resolves via `PATH`, which is Option B below).
+
+This path requires a working Rust toolchain (`cargo`) on the machine
+running `herdr plugin install` — Herdr "reports build failures but does
+not install missing toolchains." Good for tracking `main` rather than a
+pinned release.
+
+Note: `herdr plugin link` (local-dev install of a directory you already
+have checked out) skips `[[build]]` entirely regardless of manifest
+contents — you're expected to `cargo build` your own working tree
+yourself before linking.
 
 **B. Binary install via `cargo install` from a labeled stable release**
 ```sh

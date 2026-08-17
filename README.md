@@ -25,6 +25,9 @@ Typical workflows:
 
 A native Rust binary — no WASM target involved.
 
+**Requires a working Rust/`cargo` toolchain** (e.g. via
+[rustup](https://rustup.rs)) on the machine doing the build.
+
 ```sh
 git clone https://github.com/codingfragments/herdr-flash
 cd herdr-flash
@@ -42,18 +45,32 @@ ship prebuilt binaries for all four via GitHub Actions — see
 [PLANNING.md §8](PLANNING.md#8-install--distribution-plan) for full
 detail.)*
 
-**Option A — build from source via Herdr's plugin manager:**
+Both options below need a working Rust/`cargo` toolchain on the machine
+running the install command — neither is a prebuilt-binary download (that
+would be stretch-goal Option C in PLANNING.md, once release automation
+exists).
+
+**Option A — `herdr plugin install` (clone + build via the manifest):**
 ```sh
 herdr plugin install codingfragments/herdr-flash
 ```
+This only builds anything because this repo's `herdr-plugin.toml` will
+declare an explicit `[[build]]` step (`cargo build --release`) — Herdr
+does not auto-detect Rust projects and build them on its own. No
+`[[build]]` declaration means no compilation, regardless of project type.
+`herdr plugin link` (for a local checkout) skips `[[build]]` entirely; you
+build it yourself first.
 
 **Option B — install a labeled stable release directly onto `PATH`
 (recommended once releases exist):**
 ```sh
 cargo install --git https://github.com/codingfragments/herdr-flash --tag v0.1.0
 ```
-then point a minimal `herdr-plugin.toml` at the installed binary and bind
-a key to it in your Herdr config.
+This is `cargo install`, so it also compiles from source (just without a
+manifest-driven `[[build]]` step or a repo clone to manage) — a `cargo`
+toolchain is required here too. Once installed, point a minimal
+`herdr-plugin.toml` at the installed binary and bind a key to it in your
+Herdr config.
 
 Requires [Herdr](https://herdr.dev/install.sh) itself to be installed
 first.
