@@ -58,6 +58,18 @@ fn run() -> Result<(), String> {
         .map_err(|_| "HERDR_SOCKET_PATH is not set".to_string())?;
     let text = read_scrollback(&socket_path, &ctx.focused_pane_id)?;
     print!("{text}");
+
+    // Phase 1 verification affordance: keep the popup open so the
+    // scrollback can be read and the pane confirmed. Removed in Phase 2
+    // when the render loop's own event loop (Esc to quit) takes over —
+    // same shape as the sister herdr-zextract port's Phase 1 "press
+    // Enter to close" prompt, which it dropped in 0.1.1 once the picker
+    // existed.
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "\n\n--- press Enter to close ---");
+    let _ = std::io::stdout().flush();
+    let mut _line = String::new();
+    let _ = std::io::stdin().read_line(&mut _line);
     Ok(())
 }
 
