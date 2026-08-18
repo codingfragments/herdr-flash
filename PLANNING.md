@@ -43,10 +43,12 @@ input/copy actions (was host action calls, now `pane.send_text` +
 ```
 ┌─────────────────────────────────────────────┐
 │ herdr-plugin.toml                            │
-│  - [[panes]] entry: placement = "overlay"     │
+│  - [[panes]] entry: placement = "popup"       │
 │    command = ["./target/release/herdr-flash"] │
-│    (no width/height — overlay fills the       │
-│     source pane; sizing is popup-only)        │
+│    width/height = 90%/90% (matches the       │
+│     original "size" config; overlay was       │
+│     investigated but covers the whole         │
+│     workspace, not just the active pane)      │
 │  - [[actions]]: thin `herdr plugin pane open` │
 │    invocations selecting a profile via --env  │
 │    FLASH_PROFILE (profile values live in the  │
@@ -70,10 +72,10 @@ input/copy actions (was host action calls, now `pane.send_text` +
 │     - crossterm backend (new — previously     │
 │       host-owned) + ratatui                  │
 │     - relative line numbers, cursor           │
-│     - renders into the source pane's own      │
-│       dimensions (overlay, not a centered      │
-│       popup box); no alt-screen; draws over    │
-│       the overlay's own buffer,               │
+│     - renders into a centered popup box        │
+│       (90%x90% of the workspace, matching       │
+│       the original float); no alt-screen;      │
+│       draws over the popup's own buffer,       │
 │       terminal.clear() on enter                │
 │                                               │
 │  3. flash.rs (ported ~as-is)                 │
@@ -96,11 +98,11 @@ input/copy actions (was host action calls, now `pane.send_text` +
 | Original (`zellij-tile`) | Herdr equivalent (confirmed live) |
 |---|---|
 | Plugin registration, `register_plugin!` | `herdr-plugin.toml` manifest, `[[panes]]` entry |
-| Keybind → `LaunchOrFocusPlugin` | `[[actions]]` → `herdr plugin pane open --placement overlay --env FLASH_PROFILE=<name>`; bound via `[[keys.command]]` `type = "plugin_action"` in the user's own config |
+| Keybind → `LaunchOrFocusPlugin` | `[[actions]]` → `herdr plugin pane open --placement popup --env FLASH_PROFILE=<name>`; bound via `[[keys.command]]` `type = "plugin_action"` in the user's own config |
 | Host owns terminal I/O; plugin issues render calls | Plugin owns a real PTY; `crossterm` backend directly (no alt-screen) |
 | Read focused pane content + scrollback depth (`profiles`) | `pane.read` with `source = "visible"` (viewport) or `"recent_unwrapped"` + `lines: u32` (N scrollback); response at `result.read.text` |
 | Write/paste into pane | `pane.send_text` with `{"pane_id", "text"}` (not `send_input`) |
-| Floating pane `size` config (`WIDTHxHEIGHT`) | **No equivalent** — overlay fills the source pane; `[[panes]]` `width`/`height` are popup-only and rejected for overlay. The `size` config key is vestigial on Herdr. |
+| Floating pane `size` config (`WIDTHxHEIGHT`) | Popup `width`/`height` in `[[panes]]` (cells or %); advisory since popup can't be resized live (per sister port). Overlay was investigated but covers the whole workspace, not just the active pane — not adopted. |
 | Clipboard (host `Clipboard` action) | `arboard` crate directly |
 
 > The `pane.send_text` (not `pane.send_input`) and `recent_unwrapped`
@@ -740,33 +742,35 @@ confirmed in the Phase 1 / Phase 2 spikes.
 
 ### Flash-specific, confirmed in the Phase 1 spike
 
-- **Overlay placement (chosen over popup)**: `herdr plugin pane open
-  --placement overlay` works for plugin panes — confirmed live. Overlay
-  covers the source pane at the source pane's own dimensions, which is a
-  better semantic fit for flash than a centered popup: the view *is* the
-  source pane's scrollback, re-rendered for selection, so overlaying it in
-  place (closer to how `flash.nvim` overlays the current buffer in nvim)
-  is more natural than a separate float. Constraint: `[[panes]]` `width`/
-  `height` are **only supported when `placement = "popup"`** — Herdr rejects
-  them for overlay with `invalid_plugin_pane_size`. Overlay fills the
-  source pane, so the `size` config key becomes fully vestigial on Herdr
-  (was already advisory for popup's no-live-resize; now unsizable at all).
-  Recorded as a deliberate simplification versus the original, which sized
-  a float. The sister `herdr-zextract` port uses popup (its picker list is
-  a different UI from the source pane); flash uses overlay because its
-  view *is* the source pane's text.
-- **Mouse events in a plugin overlay pane**: Herdr advertises first-class
+- **Overlay placement (investigated, not adopted)**: `herdr plugin pane
+  open --placement overlay` works for plugin panes, but Herdr's overlay
+  covers the **whole workspace**, not just the active pane's rect —
+  confirmed live (the binary string "overlay and popup plugin panes
+  target the active pane" means they tie to the active pane for
+  *context*, but the overlay rect is workspace-wide; `--target-pane` is
+  rejected for overlay/popup with that same error). A pane-scoped overlay
+  ("overlay just the left pane") is not achievable with Herdr's current
+  placement model. The faithful port of the original zellij-flash float
+  (`size "90%x90%"`) is **popup at 90%x90%** — centered, sizable, and
+  smaller than a full-workspace overlay. The `size` config key is
+  advisory on Herdr (popup can't be resized live either, per the sister
+  port's finding): the manifest's `[[panes]]` `width`/`height` set the
+  launch size, and the `size` config key in `config.toml` is vestigial.
+  The sister `herdr-zextract` port also uses popup (80%x80%); both
+  plugins now converge on popup as the right Herdr placement.
+- **Mouse events in a plugin popup pane**: Herdr advertises first-class
   mouse support (click/drag/right-click) at the runtime level — worth
-  checking whether a plugin overlay pane can receive raw mouse events via
+  checking whether a plugin popup pane can receive raw mouse events via
   `crossterm`, which could make selection nicer than the original's
   keyboard-only flash navigation. Not required for parity; spike in Phase 2
   once the render loop is live.
-- **Overlay live resize**: unconfirmed whether an overlay pane emits a
-  `crossterm` `Resize` event when the underlying pane is resized mid-session
-  (the sister port confirmed popup is non-resizable live; overlay may
-  differ since it tracks the source pane). Confirm in Phase 2; if it does
-  resize, the render loop must handle `Resize` events, which popup didn't
-  need.
+- **Popup live resize**: the sister port confirmed there is **no**
+  live-resize equivalent for a popup pane mid-session — its preview pane
+  is an internal split of the picker's own fixed render area instead.
+  Flash's whole view *is* the popup, so mid-session resize behavior
+  (does `crossterm` see a `Resize` event? does the popup honor it?)
+  needs confirming in Phase 2. If unresizable live, the `size` config is
+  launch-time only, matching the original.
 
 ## 13. Ideas beyond parity
 
