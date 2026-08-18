@@ -24,9 +24,13 @@ this port's binary-release model.
   for "push" / "looks good".
 - End each phase with: what to test, how to trigger it, what works vs
   what's still a stub.
-- Current phase: **planning only** — no implementation branches until
-  PLANNING.md's open questions (§12) are resolved against a real Herdr
-  install.
+- Current phase: PLANNING.md's open questions (§12) are resolved
+  (inherited from the sister `herdr-zextract` port, confirmed live
+  against Herdr 0.8.0) — implementation branches now follow the phase
+  sequence in PLANNING.md §11 Implementation phases, one `phase/` branch/PR
+  per phase, in order. The two flash-specific items in §12 (mouse events
+  in a plugin popup, live popup resize) get confirmed in the Phase 1 / Phase 2
+  spikes rather than blocking the start.
 
 ## Release process
 
