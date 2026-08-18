@@ -12,8 +12,8 @@ Herdr plugins are plain argv binaries talking to a JSON socket API, not
 WASM modules on the `zellij-tile` ABI. The host-integration layer is being
 rewritten from scratch; the scrollback-rendering and flash-jump navigation
 logic are being carried over from the original crate with as few changes
-as possible. See [PLANNING.md §12](PLANNING.md#12-open-questions) for the
-fork-vs-standalone decision point.
+as possible. See [PLANNING.md §12](PLANNING.md#12-open-questions-resolved-2026-08-18)
+for the fork-vs-standalone decision point.
 
 ## Relationship to the original project
 
@@ -36,17 +36,17 @@ fork-vs-standalone decision point.
 
 ## What's being rewritten
 
-Everything that went through `zellij-tile`'s host ABI — and one thing
-that flips direction (the plugin now owns the terminal backend directly
-instead of the host owning it):
+Everything that went through `zellij-tile`'s host ABI — and one thing that
+flips direction (the plugin now owns the terminal backend directly instead
+of the host owning it):
 
-| Original (`zellij-tile`) | Herdr equivalent |
+| Original (`zellij-tile`) | Herdr equivalent (confirmed live) |
 |---|---|
 | Plugin registration, `register_plugin!` | `herdr-plugin.toml` manifest, `[[panes]]` entry |
-| Keybind → `LaunchOrFocusPlugin` | `[[keys.command]]` → `plugin_action` |
-| Host owns terminal I/O; plugin issues render calls | Plugin owns a real PTY; `crossterm` backend directly |
-| Read focused pane content + scrollback depth (`profiles`) | `pane.read` (`source = "viewport"` or `"recent-unwrapped"`, depth param — see PLANNING.md open questions) |
-| Write/paste into pane | `pane.send_input` / `pane.send_text` |
+| Keybind → `LaunchOrFocusPlugin` | `[[actions]]` → `herdr plugin pane open --env FLASH_PROFILE=<name>`; bound via `[[keys.command]]` `type = "plugin_action"` in the user's own config |
+| Host owns terminal I/O; plugin issues render calls | Plugin owns a real PTY; `crossterm` backend directly (no alt-screen) |
+| Read focused pane content + scrollback depth (`profiles`) | `pane.read` with `source = "visible"` (viewport) or `"recent_unwrapped"` + `lines: u32` (N lines); response at `result.read.text` |
+| Write/paste into pane | `pane.send_text` with `{"pane_id", "text"}` (not `send_input`) |
 | Floating pane `size` config (`WIDTHxHEIGHT`) | Popup `width`/`height` in `[[panes]]` (cells or %) |
 | Clipboard (host `Clipboard` action) | `arboard` crate directly |
 
@@ -56,17 +56,23 @@ plugin gets a real PTY, so this port enables the `crossterm` backend
 directly — a simplification, not just a swap.
 
 See [PLANNING.md](PLANNING.md) for the full architecture, migration
-rationale, and open questions being tracked before implementation starts.
+rationale, and the resolved open questions (inherited from the sister
+`herdr-zextract` port, confirmed live against Herdr 0.8.0) that unblocked
+implementation.
 
 ## Config/behavior differences to expect
 
 - Zellij's plugin config (`profiles`, `size`) lived in your `config.kdl`;
-  Herdr plugin config lives in a file under the plugin's own config
-  directory (`$HERDR_PLUGIN_CONFIG_DIR`) instead.
+  Herdr plugin config lives in a TOML file under the plugin's own config
+  directory (`$HERDR_PLUGIN_CONFIG_DIR/config.toml`) instead — TOML to
+  match Herdr's own config format, not the original's KDL.
 - The Zellij plugin was pinned to a specific Zellij ABI version (0.44.3).
   Herdr plugins don't have an ABI to pin against — compatibility is
   tracked via `min_herdr_version` in the manifest instead.
 - Mouse-driven selection may become possible where it wasn't before, since
   Herdr advertises first-class mouse support at the runtime level — this
   is an open question/idea, not a guaranteed v1 feature (see
-  [PLANNING.md §12](PLANNING.md#12-open-questions)).
+  [PLANNING.md §12](PLANNING.md#flash-specific-to-confirm-in-the-phase-1--phase-2-spikes)).
+- The popup pane is a singleton that can't be resized live mid-session
+  (confirmed live in the sister port); `size` is therefore launch-time
+  only, matching the original's launch-sized float.

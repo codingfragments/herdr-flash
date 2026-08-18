@@ -1,0 +1,22 @@
+# herdr-flash config
+#
+# Copy this file to the path printed by:
+#   herdr plugin config-dir herdr-flash
+# as config.toml. The plugin works with zero config — this file is for
+# overriding the built-in defaults below.
+#
+# Full reference: doc/config-reference.md in the plugin repo.
+# This file is read once per popup launch - no live reload.
+
+# Verbosity of stderr diagnostics. One of: off, error, warn, info, debug.
+# log_level = "info"
+
+# Scrollback depth profiles available to bind to keybinds. Comma-separated.
+# Each entry is either "viewport" (visible area only) or a number of
+# scrollback lines. The first entry is the default profile used by the
+# `flash-open` action.
+# profiles = "viewport,200,2000"
+
+# Popup dimensions, as WIDTHxHEIGHT. Percentages (of the host pane) or
+# absolute cell counts.
+# size = "90%x85%"
