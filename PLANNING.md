@@ -318,7 +318,7 @@ scope.
 | Source-pane 4-tier picker (`source_pane.rs`) | Phase 1 | **Replaced** by reading `focused_pane_id` from `HERDR_PLUGIN_CONTEXT_JSON` — no `source_pane.rs` needed |
 | Scrollback extraction (`viewport` / `Lines(N)`) | Phase 1, 9 | `pane.read` `visible` / `recent_unwrapped`+`lines` |
 | Render: relative line numbers, 2-line footer, `…` overflow, buffer reuse | Phase 2 | crossterm backend (no ANSI emitter) |
-| Cursor/viewport: auto-follow, half-page recenter, `Shift-←/→` pan | Phase 2, 3 | |
+| Cursor/viewport: auto-follow, half-page PgUp/PgDn recenter, `Shift-←/→` pan | Phase 2 | |
 | Word motions `w/W/b/B/e/E/0/$` | Phase 3 | word vs WORD semantics |
 | Selection: anchor, extend, `Space` toggle, Esc chain | Phase 4 | orthogonal to mode |
 | Word-jump `s` + select-jump `S` (label algorithm) | Phase 5 | distance ordering, typed-char + continuation-aware exclusion, partial fallback |
@@ -371,21 +371,29 @@ distance), a cursor cell, and the 2-line footer (status line: profile
 label, line count, cursor pos; key-hint line). Implement arrow-key
 movement (`↑↓←→`, wrapping at line edges), `scroll_y`/`scroll_x`
 auto-follow after every move, horizontal scroll with `…` overflow
-indicators on both sides, and `Esc` closes the popup. Follow the
-terminal-setup contract in §6 exactly: `enable_raw_mode` → hide cursor →
-`CrosstermBackend` → `Terminal::new` → `terminal.clear()` on entry;
-reverse on exit. No alternate screen. Hold a reused `Buffer` for the
-render area (reallocate only on resize) — less critical on native than
-it was under WASM, but cheap to keep.
+indicators on both sides, half-page `PgUp`/`PgDn` that move the
+cursor by `content_rows / 2` and re-center the viewport on the cursor,
+and `Esc` closes the popup. Follow the terminal-setup contract in §6
+exactly: `enable_raw_mode` → hide cursor → `CrosstermBackend` →
+`Terminal::new` → `terminal.clear()` on entry; reverse on exit. No
+alternate screen. Hold a reused `Buffer` for the render area
+(reallocate only on resize) — less critical on native than it was under
+WASM, but cheap to keep.
+
+`PgUp`/`PgDn` is basic cursor movement (the original lists it in
+Normal mode alongside the arrows, not under any motion subcategory) and
+reuses the exact `scroll_y` auto-follow machinery the arrow keys already
+need, so it lands here rather than with the word motions in Phase 3.
 
 **Scope:** `render.rs` (ported `render_all`/`render_content`/
 `render_footer` + `build_line_spans` helper), `main.rs` wiring it to the
-Phase 1 socket read, `Cargo.toml` with `ratatui` + `crossterm` (backend
+Phase 1 socket read + the event loop, `page_up`/`page_down` +
+`recenter_scroll`, `Cargo.toml` with `ratatui` + `crossterm` (backend
 enabled).
 
-**Out of scope:** word motions, flash jump labels, selection, search,
-copy/insert, config, theme colors (use built-in Catppuccin Macchiato
-defaults hardcoded for now).
+**Out of scope:** word motions (`w`/`W`/`b`/`B`/``e`/`E`/`0`/`$` — Phase 3),
+flash jump labels, selection, search, copy/insert, config, theme colors
+(use built-in Catppuccin Macchiato defaults hardcoded for now).
 
 **Manual test plan:**
 1. `just relink`.
@@ -397,22 +405,23 @@ view.
 follows the cursor.
 5. A line longer than the viewport shows `…` on the overflow side;
 `Shift-←`/`Shift-→` pan 5 columns without moving the cursor.
-6. `Esc` closes the popup cleanly — cursor visible, no raw-mode leak.
+6. `PgUp`/`PgDn` jump half a page; the cursor lands at the vertical
+centre and the viewport doesn't leave blank rows near the buffer end.
+7. `Esc` closes the popup cleanly — cursor visible, no raw-mode leak.
 
-### Phase 3 — Word motions + half-page navigation
+### Phase 3 — Word motions
 
 **Prompt:** Port the original's vim-style cursor vocabulary into the
 Phase 2 render loop: word motions `w`/`W`/`b`/`B`/`e`/`E` (word =
 `[a-zA-Z0-9_]+`, WORD = non-whitespace run), `0` (line start), `$` (last
-char), and half-page `PgUp`/`PgDn` that move the cursor by
-`content_rows / 2` and re-center the viewport on the cursor. All motions
-clamp the column to the target line's length and scroll the cursor into
-view. These work identically with or without a selection (selection
-lands in Phase 4 — motions just move the cursor for now).
+char). All motions clamp the column to the target line's length and
+scroll the cursor into view. These work identically with or without a
+selection (selection lands in Phase 4 — motions just move the cursor
+for now). `PgUp`/`PgDn` already shipped in Phase 2.
 
 **Scope:** `motion_w`/`motion_b`/`motion_e` (with `cclass`/
 `next_pos`/`prev_pos` helpers), `motion_line_start`/`motion_line_end`,
-`page_up`/`page_down` + `recenter_scroll`, wired into the key handler.
+wired into the key handler.
 
 **Out of scope:** selection, jump, search, config.
 
@@ -420,9 +429,7 @@ lands in Phase 4 — motions just move the cursor for now).
 1. `just relink`.
 2. On a pane with mixed tokens, confirm `w`/`W`/`b`/`B`/`e`/`E` land on
 the right word/WORD boundaries; `0`/`$` hit line ends.
-3. `PgUp`/`PgDn` jump half a page and the cursor lands at the vertical
-centre; the viewport doesn't leave blank rows near the buffer end.
-4. Motions on the last/first line clamp without panicking.
+3. Motions on the last/first line clamp without panicking.
 
 ### Phase 4 — Selection model + Esc cancel chain
 
