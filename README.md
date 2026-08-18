@@ -59,7 +59,16 @@ as `config.toml`. Full schema: [`doc/config-reference.md`](doc/config-reference.
 | `size` | `"90%x85%"` | Popup dimensions as `WIDTHxHEIGHT`. **Advisory on Herdr** — the popup's actual size is set by `[[panes]]` `width`/`height` at manifest time (no live resize); recorded here for parity. |
 | `labels` | `"a-zA-Z"` (52 chars) | Characters used as word-jump (`s`) labels. Any printable non-whitespace chars; duplicates removed; order preserved. |
 | `line_labels` | `"directional"` | Line-jump (`l`) scheme: `directional` (a-z below, A-Z above) or `unified` (split `labels` in half). |
-| `color_*` | Catppuccin Macchiato | 15 theme roles (`color_sel_bg`, `color_cursor_bg`, `color_jump_label_bg`, …) as `#rrggbb`. Omit any to keep the default. |
+| `color_*` | Catppuccin Macchiato | 16 theme roles (`color_sel_bg`, `color_cursor_bg`, `color_gutter_mark`, `color_jump_label_bg`, `color_search_match_bg`, …) as `#rrggbb`. Omit any to keep the default. |
+
+Per-keybind depth is configured via `[profiles.<name>]` blocks in your
+`config.toml` (each carrying a `depths` cycle list), selected at launch by
+`FLASH_PROFILE=<name>` on the manifest action — see
+[`doc/config-reference.md`](doc/config-reference.md). The `labels`,
+`line_labels`, and `color_*` settings are global preferences (the zellij
+version allowed these per-keybind; the Herdr port collapses them to global,
+matching the sister `herdr-zextract` port's philosophy — see
+[`doc/config-reference.md`](doc/config-reference.md) for the rationale).
 
 ## Keybinding
 

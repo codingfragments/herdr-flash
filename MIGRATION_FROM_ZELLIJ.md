@@ -62,10 +62,29 @@ implementation.
 
 ## Config/behavior differences to expect
 
-- Zellij's plugin config (`profiles`, `size`) lived in your `config.kdl`;
-  Herdr plugin config lives in a TOML file under the plugin's own config
-  directory (`$HERDR_PLUGIN_CONFIG_DIR/config.toml`) instead — TOML to
-  match Herdr's own config format, not the original's KDL.
+- Zellij's plugin config (`profiles`, `size`, `labels`, `line_labels`, 16
+  `color_*` roles) was passed per-keybind through the `configuration {}`
+  block in `config.kdl` — each keybind could launch with a different
+  depth list, charset, and theme. Herdr plugin config lives in a TOML file
+  under the plugin's own config directory
+  (`$HERDR_PLUGIN_CONFIG_DIR/config.toml`) instead — TOML to match Herdr's
+  own config format, not the original's KDL.
+- The config surface is split into three layers, mirroring the sister
+  `herdr-zextract` port: **manifest** (`herdr-plugin.toml`) owns `size`
+  (the popup dimensions, via `[[panes]]` `width`/`height`); **global
+  config** (`config.toml` top-level) owns `log_level`, `labels`,
+  `line_labels`, and the 16 `color_*` theme roles; **per-keybind
+  profiles** (`[profiles.<name>]` in `config.toml`) own `depths` (the
+  scrollback-depth cycle list for `g`), selected at launch by
+  `FLASH_PROFILE=<name>` on the manifest action's `command`.
+- The one deliberate simplification versus zellij: `labels`,
+  `line_labels`, and the 16 `color_*` theme roles are **global** rather
+  than per-keybind. The zellij version allowed these per-keybind; the
+  Herdr port collapses preference-level settings to global (matching the
+  sister port's philosophy), keeping per-keybind only the depth list —
+  the main per-launch lever. See
+  [PLANNING.md §11 Phase 9](PLANNING.md#phase-9--profile-cycling-g--config--theme)
+  for the rationale.
 - The Zellij plugin was pinned to a specific Zellij ABI version (0.44.3).
   Herdr plugins don't have an ABI to pin against — compatibility is
   tracked via `min_herdr_version` in the manifest instead.
