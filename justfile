@@ -36,4 +36,4 @@ relink: unlink link
 
 # open the plugin's popup pane directly, bypassing any keybind
 open:
-    herdr plugin pane open --plugin {{ plugin_id }} --entrypoint flash --placement popup
+    herdr plugin pane open --plugin {{ plugin_id }} --entrypoint flash --placement overlay

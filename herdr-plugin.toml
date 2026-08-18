@@ -11,9 +11,7 @@ command = ["cargo", "build", "--release"]
 id = "flash"
 title = "flash"
 command = ["./target/release/herdr-flash"]
-placement = "popup"
-width = "90%"
-height = "90%"
+placement = "overlay"
 
 # Launcher actions: each is a thin invocation of `herdr plugin pane
 # open` for the "flash" pane above, selecting a named *profile* via
@@ -28,4 +26,4 @@ height = "90%"
 [[actions]]
 id = "flash-open"
 title = "flash: scrollback selector"
-command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--env", "FLASH_PROFILE=default"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--placement", "overlay", "--env", "FLASH_PROFILE=default"]
