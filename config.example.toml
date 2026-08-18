@@ -14,9 +14,35 @@
 # Scrollback depth profiles available to bind to keybinds. Comma-separated.
 # Each entry is either "viewport" (visible area only) or a number of
 # scrollback lines. The first entry is the default profile used by the
-# `flash-open` action.
+# `flash-open` action. Cycled inside the popup with `g`.
 # profiles = "viewport,200,2000"
 
 # Popup dimensions, as WIDTHxHEIGHT. Percentages (of the host pane) or
-# absolute cell counts.
+# absolute cell counts. Advisory on Herdr — the popup's actual size is
+# set by [[panes]] width/height at manifest time (no live resize).
 # size = "90%x85%"
+
+# Characters used as word-jump (`s`) labels. Any printable non-whitespace
+# chars; duplicates removed; order preserved. Fewer labels means more chars
+# must be typed before labels appear.
+# labels = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# Line-jump (`l`) label scheme. "directional" (default): a-z below cursor,
+# A-Z above. "unified": split `labels` in half, first half below, second
+# half above.
+# line_labels = "directional"
+
+# Theme colors — hex strings ("#rrggbb"). All default to Catppuccin
+# Macchiato. Omit any key to keep the default. See doc/config-reference.md
+# for the full list of 15 roles.
+# color_sel_bg          = "#8aadf4"
+# color_sel_fg          = "#24273a"
+# color_cursor_bg       = "#cad3f5"
+# color_cursor_fg       = "#24273a"
+# color_jump_label_bg   = "#f5a97f"
+# color_jump_label_fg   = "#24273a"
+# color_jump_match_fg   = "#ed8796"
+# color_jump_partial_fg = "#eed49f"
+# color_search_match_bg    = "#a6da95"
+# color_search_current_bg  = "#eed49f"
+# color_search_fg       = "#24273a"

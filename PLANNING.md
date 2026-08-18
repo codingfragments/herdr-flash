@@ -261,18 +261,19 @@ herdr-flash/
 ├── Cargo.lock
 ├── CHANGELOG.md
 ├── justfile                 # build / check / link / unlink / relink / open
-├── config.example.toml      # starter config template (profiles + size)
+├── config.example.toml      # starter config template (profiles + size + colors)
 ├── src/
-│   ├── main.rs
+│   ├── main.rs              # launch context, mode dispatch, run loop
 │   ├── socket_client.rs     # herdr socket API client (fresh conn per call)
-│   ├── config.rs            # $HERDR_PLUGIN_CONFIG_DIR/config.toml loader
+│   ├── config.rs            # $HERDR_PLUGIN_CONFIG_DIR/config.toml loader + Theme
 │   ├── render.rs            # ported ratatui rendering, own crossterm backend
-│   ├── flash.rs             # ported jump-to-word/line label logic
-│   └── selection.rs         # copy/insert actions, OS-specific bits
+│   ├── flash.rs             # word-jump + line-jump label logic (Modes Jump/LineJump)
+│   ├── search.rs            # incremental search (Mode Search: input + nav)
+│   └── selection.rs         # anchor/extend/selected_text + copy/insert actions
 ├── doc/
-│   ├── config-reference.md  # full config.toml schema
+│   ├── config-reference.md  # full config.toml schema (profiles, size, labels, colors)
 │   ├── keybinding.md        # shipped actions, binding a key, adding your own
-│   ├── flash-jump.md        # jump-to-word / jump-to-line mechanic reference
+│   ├── flash-jump.md        # word-jump algorithm + line-jump mechanic reference
 │   ├── use-cases.md         # worked walkthroughs
 │   └── env-vars.md          # the one env var involved
 ├── herdr-plugin.toml        # manifest (written in Phase 5)
@@ -300,6 +301,29 @@ carries the goal and scope so a fresh session doesn't need the rest of this
 document to get oriented) and don't consider the phase done until its
 manual test plan passes against a real Herdr install.
 
+### Feature coverage (parity with zellij-flash v0.2.1)
+
+Every feature of the original v0.2.1 is delivered by exactly one phase
+below. Features that change shape on Herdr are called out in the phase
+scope.
+
+| Original feature | Herdr phase | Note |
+|---|---|---|
+| Source-pane 4-tier picker (`source_pane.rs`) | Phase 1 | **Replaced** by reading `focused_pane_id` from `HERDR_PLUGIN_CONTEXT_JSON` — no `source_pane.rs` needed |
+| Scrollback extraction (`viewport` / `Lines(N)`) | Phase 1, 9 | `pane.read` `visible` / `recent_unwrapped`+`lines` |
+| Render: relative line numbers, 2-line footer, `…` overflow, buffer reuse | Phase 2 | crossterm backend (no ANSI emitter) |
+| Cursor/viewport: auto-follow, half-page recenter, `Shift-←/→` pan | Phase 2, 3 | |
+| Word motions `w/W/b/B/e/E/0/$` | Phase 3 | word vs WORD semantics |
+| Selection: anchor, extend, `Space` toggle, Esc chain | Phase 4 | orthogonal to mode |
+| Word-jump `s` + select-jump `S` (label algorithm) | Phase 5 | distance ordering, typed-char + continuation-aware exclusion, partial fallback |
+| Line-jump `l` + select-jump `L` (directional/unified) | Phase 6 | gutter labels |
+| Search `/` (input + nav phases, `n`/`N`, Space-to-anchor) | Phase 7 | only when no anchor |
+| Actions: `Enter` copy, `Shift-Enter` insert + Confirm dialog | Phase 8 | `arboard` + `pane.send_text` |
+| Profile cycling `g` (re-grab) | Phase 9 | |
+| Config: `profiles`, `size`, `labels`, `line_labels`, 15 `color_*` | Phase 9 | TOML under `$HERDR_PLUGIN_CONFIG_DIR` |
+| Manifest + keybinding actions | Phase 10 | `[[actions]]` per profile |
+| CI, release, docs | Phase 11 | |
+
 ### Phase 1 — Socket client + raw popup echo
 
 **Prompt:** Build the smallest possible `herdr-flash` binary and manifest
@@ -311,14 +335,15 @@ no ratatui yet — just prove the pipes connect). Write `herdr-plugin.toml`
 with a `[[panes]]` popup entry and a `[[build]]` step
 (`cargo build --release`), per §8. Keep the socket client hand-rolled
 (`UnixStream`, newline-delimited JSON, fresh connection per call) per §6
-— no async runtime.
+— no async runtime. The original's `source_pane.rs` 4-tier picker is
+**not ported** — Herdr hands the source pane id directly via context JSON.
 
 **Scope:** `socket_client.rs` (connect, one request/response round trip),
 `main.rs` reading context env + printing result, minimal manifest.
 
 **Out of scope:** render view, flash navigation, selection, config file,
 keybinding (`herdr plugin pane open` from the CLI is an acceptable trigger
-for this phase — real keybinding wiring is Phase 5).
+for this phase — real keybinding wiring is Phase 10).
 
 **Manual test plan:**
 1. `cargo build --release`.
@@ -330,131 +355,318 @@ for this phase — real keybinding wiring is Phase 5).
    *before* the popup opened, not the popup's own (empty) buffer.
 5. `herdr plugin unlink herdr-flash` when done (or `just unlink`).
 
-### Phase 2 — Scrollback view with relative line numbers
+### Phase 2 — Scrollback view: render + relative line numbers + cursor + footer
 
 **Prompt:** Port the original's relative-line-number `ratatui` rendering
-into a standalone terminal binary that owns its `crossterm` backend
-directly (the popup's real PTY), fed by the real `pane.read` from Phase 1
-(no static fixture needed now that the socket works). Render the scrollback
-with relative line numbers and a cursor, scrollable with the original's
-movement keys. Follow the terminal-setup contract in §6 exactly:
-`enable_raw_mode` → hide cursor → `CrosstermBackend` → `Terminal::new` →
-`terminal.clear()` on entry; reverse on exit. No alternate screen.
+into a terminal binary that owns its `crossterm` backend directly (the
+popup's real PTY), fed by the real `pane.read` from Phase 1. Render the
+scrollback with relative line numbers (cursor row = 0, others show
+distance), a cursor cell, and the 2-line footer (status line: profile
+label, line count, cursor pos; key-hint line). Implement arrow-key
+movement (`↑↓←→`, wrapping at line edges), `scroll_y`/`scroll_x`
+auto-follow after every move, horizontal scroll with `…` overflow
+indicators on both sides, and `Esc` closes the popup. Follow the
+terminal-setup contract in §6 exactly: `enable_raw_mode` → hide cursor →
+`CrosstermBackend` → `Terminal::new` → `terminal.clear()` on entry;
+reverse on exit. No alternate screen. Hold a reused `Buffer` for the
+render area (reallocate only on resize) — less critical on native than
+it was under WASM, but cheap to keep.
 
-**Scope:** `render.rs` (ported), `main.rs` wiring it to the Phase 1 socket
-read, `Cargo.toml` with `ratatui` + `crossterm` (backend enabled).
+**Scope:** `render.rs` (ported `render_all`/`render_content`/
+`render_footer` + `build_line_spans` helper), `main.rs` wiring it to the
+Phase 1 socket read, `Cargo.toml` with `ratatui` + `crossterm` (backend
+enabled).
 
-**Out of scope:** flash jump labels, selection, copy/insert, config.
+**Out of scope:** word motions, flash jump labels, selection, search,
+copy/insert, config, theme colors (use built-in Catppuccin Macchiato
+defaults hardcoded for now).
 
 **Manual test plan:**
 1. `just relink`.
 2. Trigger the popup on a pane with substantial scrollback.
-3. Confirm the popup renders the scrollback with correct relative line
-   numbers, no leftover scrollback bleeding through around the view, and
-   that scrolling moves through the scrollback.
-4. Quit key closes the popup cleanly with the terminal left in a sane
-   state (cursor visible, no raw-mode leak).
+3. Confirm relative line numbers are correct (cursor row = 0), the cursor
+cell is visible, and no leftover scrollback bleeds through around the
+view.
+4. Arrow keys move the cursor (wrapping at line edges); the viewport
+follows the cursor.
+5. A line longer than the viewport shows `…` on the overflow side;
+`Shift-←`/`Shift-→` pan 5 columns without moving the cursor.
+6. `Esc` closes the popup cleanly — cursor visible, no raw-mode leak.
 
-### Phase 3 — Flash jump-to-word / jump-to-line navigation
+### Phase 3 — Word motions + half-page navigation
 
-**Prompt:** Port the original's nvim-`flash`-style jump-to-word and
-jump-to-line label overlay and its input handling into `flash.rs`, layered
-on the Phase 2 render. Typing the jump trigger shows label overlays over
-words/lines; typing a label moves the cursor there. Verify against the
-live popup, not a fixture.
+**Prompt:** Port the original's vim-style cursor vocabulary into the
+Phase 2 render loop: word motions `w`/`W`/`b`/`B`/`e`/`E` (word =
+`[a-zA-Z0-9_]+`, WORD = non-whitespace run), `0` (line start), `$` (last
+char), and half-page `PgUp`/`PgDn` that move the cursor by
+`content_rows / 2` and re-center the viewport on the cursor. All motions
+clamp the column to the target line's length and scroll the cursor into
+view. These work identically with or without a selection (selection
+lands in Phase 4 — motions just move the cursor for now).
 
-**Scope:** `flash.rs` (ported), integration into the render + input loop.
+**Scope:** `motion_w`/`motion_b`/`motion_e` (with `cclass`/
+`next_pos`/`prev_pos` helpers), `motion_line_start`/`motion_line_end`,
+`page_up`/`page_down` + `recenter_scroll`, wired into the key handler.
 
-**Out of scope:** selection, copy/insert, config.
-
-**Manual test plan:**
-1. `just relink`.
-2. Trigger the popup, enter jump-to-word, confirm labels appear over
-   words and typing a label lands the cursor on the right word.
-3. Same for jump-to-line.
-4. Escape/cancel returns to normal movement without a dangling overlay.
-
-### Phase 4 — Selection + actions (copy / insert)
-
-**Prompt:** Port the original's precise text-range selection into
-`selection.rs`, and wire the two terminal actions: **copy** the selection
-to the clipboard via `arboard`, and **insert** the selection back into the
-source pane via `pane.send_text` (not `send_input` — see §5/§12). Insert
-always targets the pane the plugin was launched from (`focused_pane_id`
-from the launch context), regardless of cursor position in the view.
-
-**Scope:** `selection.rs`, the copy/insert dispatch, `arboard` dependency.
-
-**Out of scope:** config, keybinding, manifest actions.
+**Out of scope:** selection, jump, search, config.
 
 **Manual test plan:**
 1. `just relink`.
-2. Trigger the popup, select a range, copy — confirm the exact text lands
-   on the system clipboard (test on macOS and on Linux X11 *and* Wayland).
-3. Select a range, insert — confirm the text appears in the source pane's
-   input (the pane that was focused before the popup opened).
-4. Quit cleanly.
+2. On a pane with mixed tokens, confirm `w`/`W`/`b`/`B`/`e`/`E` land on
+the right word/WORD boundaries; `0`/`$` hit line ends.
+3. `PgUp`/`PgDn` jump half a page and the cursor lands at the vertical
+centre; the viewport doesn't leave blank rows near the buffer end.
+4. Motions on the last/first line clamp without panicking.
 
-### Phase 5 — Manifest, keybinding, config, starter template
+### Phase 4 — Selection model + Esc cancel chain
+
+**Prompt:** Port the original's selection model: an `anchor:
+Option<(usize, usize)>` field on state, orthogonal to mode. `Space`
+toggles — set anchor at cursor, or if already set, swap cursor/anchor
+(jump cursor to the old anchor end), or clear. The selection spans
+`min(anchor, cursor)..=max(anchor, cursor)` in stream order and renders
+with a blue background. Every cursor move (arrows, motions — and later,
+jump/search-nav) extends the selection while the anchor is set. The
+footer shows `SEL N lines M chars` when a selection is active. Implement
+the `Esc` cancel chain: in a mode (jump/line-jump/search/confirm) →
+cancel mode; else if anchor set → clear anchor; else → close the popup.
+
+**Scope:** `anchor` field, `selection_range`/`selected_text`/
+`selection_info`, `Space` toggle, selection rendering in
+`build_line_spans`, Esc chain in the key handler.
+
+**Out of scope:** jump modes, search, copy/insert actions (selection is
+visible and queryable but not yet actionable — that's Phase 8).
+
+**Manual test plan:**
+1. `just relink`.
+2. Move the cursor, press `Space` — anchor sets, footer shows `SEL`.
+3. Move with arrows/motions — the selection extends and highlights.
+4. Press `Space` again — cursor jumps to the anchor end (swap).
+5. Press `Esc` with anchor set — anchor clears (not close). Press `Esc`
+again with no anchor — popup closes.
+
+### Phase 5 — Word-jump `s` / `S` (label algorithm + select-jump)
+
+**Prompt:** Port the original's nvim-`flash`-style word-jump into
+`flash.rs`, layered on the Phase 2/3 render and the Phase 4 selection.
+`s` enters Jump mode; typing narrows case-insensitive substring matches
+across **visible lines** (with trailing-space virtual matching so `"foo "`
+matches `"foo"` at line end). Labels are assigned by distance from the
+cursor (nearest first), excluding typed chars and continuation chars
+(ambiguous continuation → excluded from the pool; unique continuation →
+pre-assigned to that match). When matches exceed the label pool, fall
+back to partial-match highlighting (no labels). Typing a label jumps the
+cursor to the match start and returns to Normal. `S` (and `Shift-s`)
+enters **select-jump**: same jump, but plants the selection anchor at
+the destination on completion — this works because selection (Phase 4)
+already exists, so no rework. Render labels/partial/prefix-match per the
+priority table (label > prefix-match > partial > cursor > selection >
+text). `Esc` cancels the jump without touching an existing anchor.
+
+**Scope:** `flash.rs` — `Mode::Jump`, `compute_jump_labels` (distance
+ordering, typed-char exclusion, continuation-aware exclusion, partial
+fallback), `handle_key_jump`, `jump_to`, jump rendering in
+`render_content`/`build_line_spans`, `start_selection` flag wired to the
+Phase 4 anchor.
+
+**Out of scope:** line-jump (Phase 6), search (Phase 7), config-driven
+`labels` charset (Phase 9 — hardcode the 52-char `a-zA-Z` pool for now).
+
+**Manual test plan:**
+1. `just relink`.
+2. `s` then type a prefix — confirm labels appear on matches when count
+fits the pool; typing a label jumps the cursor to the right match.
+3. Type a prefix with too many matches — confirm partial-highlight (no
+labels, all matches yellow) and the "keep typing…" footer.
+4. Type a prefix where two matches share a continuation char — confirm
+that char is never a label (typing it narrows, doesn't jump).
+5. Type a prefix with a unique continuation — confirm that char is
+pre-assigned and jumps directly to its match.
+6. `S` then label — confirm the anchor plants at the destination and
+the footer shows `[SEL]`.
+7. `Esc` mid-jump returns to Normal without clearing an existing anchor.
+
+### Phase 6 — Line-jump `l` / `L` (gutter labels + select-jump)
+
+**Prompt:** Port the original's line-jump into `flash.rs`. `l` enters
+LineJump mode: every visible line gets a label **in the gutter**
+(replacing the line number) instantly. Default directional scheme: `a`-`z`
+for lines below the cursor (`a` = nearest), `A`-`Z` for lines above (`A`
+= nearest); the cursor line has no label. Typing a label jumps the
+cursor to that line (preserving column, clamped to the line length). `L`
+(and `Shift-l`) enters **select-line-jump**: same jump, plants the
+anchor at the destination. `Esc` cancels. (The `unified` scheme —
+splitting the `labels` charset in half — is config-driven and lands in
+Phase 9; ship the directional scheme now.)
+
+**Scope:** `Mode::LineJump`, `compute_line_labels` (directional),
+`handle_key_line_jump`, gutter-label rendering in `render_content`,
+`start_selection` flag wired to the Phase 4 anchor.
+
+**Out of scope:** `unified` line-label scheme (Phase 9), search.
+
+**Manual test plan:**
+1. `just relink`.
+2. `l` — confirm gutter labels appear on every visible line except the
+cursor line; lowercase below, uppercase above.
+3. Type a label — cursor jumps to that line, column clamped.
+4. `L` then label — anchor plants at the destination, footer shows
+`[SEL]`.
+5. `Esc` cancels without clearing an existing anchor.
+
+### Phase 7 — Search mode `/`
+
+**Prompt:** Port the original's incremental search into `search.rs`. `/`
+(only when no anchor is active) enters the **input phase**: typing appends
+to the query, matches highlight live across **all captured lines** (not
+just visible), `Backspace` removes, `Enter` commits → switches to the
+**navigation phase** (cursor jumps to the first match at or after the
+current position). In nav phase: `n`/`N` jump to next/previous match
+(wrapping) and re-center; `Space` sets the anchor at the current match
+start and returns to Normal (the "search then select" power move); `Esc`
+or any unrecognised key returns to Normal with the cursor staying at the
+current match. Render non-current matches in one color, the current
+match in another (bold). Footer shows `/query█` in input phase and
+`/query  M/N  n:next  N:prev  Space:select  Esc:done` in nav phase.
+
+**Scope:** `search.rs` — `Mode::Search` (input + nav),
+`compute_search_matches`, `search_current_from_cursor`, `handle_key_search`,
+search rendering in `render_content`/`build_line_spans`.
+
+**Out of scope:** config.
+
+**Manual test plan:**
+1. `just relink`.
+2. `/` then type — confirm matches highlight live across the whole
+capture; footer shows the query with a cursor block.
+3. `Enter` — switch to nav; `n`/`N` cycle through matches with wrap;
+viewport re-centres.
+4. `Space` in nav — anchor sets at the current match, returns to Normal;
+the selection can then be extended with motions/jump.
+5. `/` does nothing while an anchor is active (per the original).
+6. `Esc` in input phase returns to Normal without moving the cursor.
+
+### Phase 8 — Actions: copy + insert + Confirm dialog
+
+**Prompt:** Wire the two terminal actions. `Enter` copies the selection
+to the clipboard via `arboard` and closes the popup; warn (footer message,
+stay open) if there's no selection. `Shift-Enter` inserts the selection
+into the source pane via `pane.send_text` (not `send_input` — see §5/§12)
+and closes; insert always targets `focused_pane_id` from the launch
+context, regardless of cursor position. If the selection contains
+newlines, enter `Mode::Confirm` showing "Insert N lines into pane?
+y/Enter:confirm  Esc:cancel"; `y`/`Enter` confirms and inserts,
+`Esc` cancels back to Normal (selection preserved). Single-line
+selections insert immediately without confirmation.
+
+**Scope:** `action_copy`/`action_insert`/`do_insert`, `Mode::Confirm`,
+`arboard` dependency, `pane.send_text` call via `socket_client`.
+
+**Out of scope:** config, manifest actions.
+
+**Manual test plan:**
+1. `just relink`.
+2. Select a single-line range, `Enter` — confirm the exact text lands on
+the system clipboard (test macOS, Linux X11 **and** Wayland) and the
+popup closes.
+3. Select a single-line range, `Shift-Enter` — confirm the text appears
+in the source pane's input and the popup closes.
+4. Select a multi-line range, `Shift-Enter` — confirm the Confirm dialog
+appears; `y` inserts, `Esc` returns to Normal with the selection
+intact.
+5. Press `Enter`/`Shift-Enter` with no selection — confirm the warning
+footer and that the popup stays open.
+
+### Phase 9 — Profile cycling `g` + config + theme
+
+**Prompt:** Port the original's config surface, adapted to Herdr's TOML
+model. Add `config.rs` loading `$HERDR_PLUGIN_CONFIG_DIR/config.toml` once
+per launch (missing/unset/parse-error → built-in defaults, never crash;
+parse errors reported on stderr). Ship `config.example.toml` as the
+starter template (single source of truth, `include_str!`'d for the
+`Ctrl-W`-style write-default affordance if added). Support: `profiles`
+(comma-separated `viewport`/N, cycled with `g` — re-grab on cycle, reset
+cursor to bottom, clear selection), `labels` (word-jump charset),
+`line_labels` (`directional`/`unified`), `log_level`, and the 15
+`color_*` theme roles (hex `#rrggbb` parsing, Catppuccin Macchiato
+defaults). The `size` config key is **advisory only** on Herdr — the
+popup's actual dimensions are set by `[[panes]]` `width`/`height` at
+manifest time (no live popup resize, per §12); document this as a
+deliberate simplification versus the original. Wire `g` to cycle
+profiles and re-grab via `pane.read` with the new depth.
+
+**Scope:** `config.rs` (full schema), `config.example.toml`, `Theme`
+struct with hex parsing, `cycle_profile` + re-grab, `g` keybinding,
+`doc/config-reference.md`.
+
+**Out of scope:** manifest actions (Phase 10), CI (Phase 11).
+
+**Manual test plan:**
+1. `just relink`.
+2. `g` cycles through `viewport`/`200`/`2000` and re-grabs; cursor
+resets to the bottom, selection clears, footer profile label updates.
+3. Drop a `config.toml` with custom `profiles` + `labels` (home-row
+only) — confirm `g` cycles the custom set and word-jump uses the
+shorter charset (reaches labeled state faster).
+4. Set `line_labels = "unified"` — confirm line-jump splits the
+configured `labels` charset in half.
+5. Override a `color_*` key — confirm the new color renders.
+6. Malformed `config.toml` → stderr message + built-in defaults, no
+crash.
+
+### Phase 10 — Manifest + keybinding actions + docs
 
 **Prompt:** Write the real `herdr-plugin.toml`: `[[panes]]` popup with
 `width`/`height` mirroring the original `size` default (`90%x85%`), plus
 `[[actions]]` entries that open the popup via
 `herdr plugin pane open --plugin herdr-flash --entrypoint flash --env
 FLASH_PROFILE=<name>` — one action per built-in profile (e.g.
-`flash-open` for the default viewport profile, `flash-deep` for a deep
-scrollback profile), mirroring the sister port's action shape. Add
-`config.rs` loading `profiles` + `size` from
-`$HERDR_PLUGIN_CONFIG_DIR/config.toml` once per launch (missing/unset/
-parse-error → built-in defaults, never crash), and ship
-`config.example.toml` as the starter template. Document the keybinding
-story in `doc/keybinding.md` — Herdr owns all keybindings, the plugin
-never binds its own; `[[keys.command]]` has no `env` field, so profile
-selection lives on the action's `command` via `--env`.
+`flash-open` for viewport, `flash-200` / `flash-2000` for the line-capped
+defaults), mirroring the sister port's action shape. Add `min_herdr_version`
+and `platforms = ["macos", "linux"]`. Document the keybinding story in
+`doc/keybinding.md` — Herdr owns all keybindings, the plugin never binds
+its own; `[[keys.command]]` has no `env` field, so profile selection
+lives on the action's `command` via `--env`. Write `doc/env-vars.md`
+(`FLASH_PROFILE`) and update `README.md` from "planned" to real install
+instructions (Option A/B per §8) with the Docs table.
 
-**Scope:** `herdr-plugin.toml`, `config.rs`, `config.example.toml`,
-`doc/keybinding.md`, `doc/config-reference.md`, `doc/env-vars.md`.
+**Scope:** `herdr-plugin.toml`, `doc/keybinding.md`, `doc/env-vars.md`,
+`README.md` install rewrite, `doc/use-cases.md`.
 
-**Out of scope:** CI, release, README install rewrite (Phase 7).
+**Out of scope:** `doc/flash-jump.md` (Phase 11), CI (Phase 11).
 
 **Manual test plan:**
 1. `just relink`.
 2. Bind a key to `flash-open` in your Herdr config; confirm the popup
-   opens with the viewport-depth profile.
-3. Bind a key to `flash-deep`; confirm it opens with the deep-scrollback
-   profile (more lines visible).
-4. Drop a `config.toml` with a custom profile + size override; confirm it
-   takes effect. Confirm a malformed `config.toml` falls back to defaults
-   with a stderr message rather than crashing.
+opens with the viewport-depth profile.
+3. Bind a key to `flash-2000`; confirm it opens with 2000 lines of
+scrollback.
+4. `herdr plugin install codingfragments/herdr-flash --ref <this-tag>`
+works on a clean machine (once Phase 11 cuts a tag).
 
-### Phase 6 — CI & first release
+### Phase 11 — CI, first release, docs pass
 
 **Prompt:** Add `.github/workflows/ci.yml` and `release.yml` per §9. Cut
 `v0.1.0` via the two-step release flow in `CLAUDE.md` (code PRs already
 merged; `release/0.1.0` PR with `Cargo.toml` bump + `CHANGELOG.md` entry;
 merge; tag `v0.1.0`; push tag). Confirm the release workflow builds all
 three target triples, attaches `herdr-flash-<triple>.tar.gz` + `.sha256`,
-and publishes both the versioned and rolling `latest` releases.
+and publishes both the versioned and rolling `latest` releases. Write
+`doc/flash-jump.md` (the full word-jump algorithm reference, ported from
+the original's `doc/jump-mode.md`) and verify every doc link resolves.
 
-**Scope:** `ci.yml`, `release.yml`, `CHANGELOG.md`, version bump.
+**Scope:** `ci.yml`, `release.yml`, `CHANGELOG.md`, version bump,
+`doc/flash-jump.md`, final doc-link audit.
 
 **Manual test plan:**
 1. `ci.yml` passes on a PR (fmt/clippy/test, macOS + Linux).
 2. After tagging, the release workflow publishes the three binaries and
-   the rolling `latest` release.
+the rolling `latest` release.
 3. `herdr plugin install codingfragments/herdr-flash --ref v0.1.0` works
-   on a clean machine.
-
-### Phase 7 — Docs pass
-
-**Prompt:** Update `README.md` from "planned" to real install instructions
-(Option A/B per §8), fill in the Docs table, and write `doc/flash-jump.md`
-and `doc/use-cases.md`. Verify every doc link resolves.
-
-**Scope:** `README.md`, `doc/flash-jump.md`, `doc/use-cases.md`.
-
-**Manual test plan:** fresh-eyes read of README + docs follows a clean
-install from zero to a working keybind with no external references needed.
+on a clean machine.
+4. Fresh-eyes read of README + docs follows a clean install from zero to
+a working keybind with no external references needed.
 
 ## 12. Open questions (resolved 2026-08-18)
 

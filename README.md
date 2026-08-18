@@ -13,22 +13,27 @@ navigation.
 
 Herdr has no built-in way to select arbitrary text from a terminal pane's
 scrollback. `herdr-flash` opens a floating view of the source pane's
-scrollback, renders it with relative line numbers, and lets you jump to a
-word or line with `flash`-style label jumps, then select text precisely
-and copy it to the clipboard or insert it directly into the source pane.
+scrollback, renders it with relative line numbers, and lets you navigate
+with a cursor and vim-style word motions (`w`/`b`/`e`/`0`/`$`), jump to a
+word or line with `flash`-style label jumps (`s`/`l`), or search
+incrementally (`/`). Select a precise range, then copy it to the clipboard
+or insert it directly into the source pane.
 
 Typical workflows:
 - Copy a URL, path, or command that scrolled past.
 - Grab a block of output for a ticket or chat message.
 - Insert a previous command back into the shell without retyping.
 
+See [`doc/flash-jump.md`](doc/flash-jump.md) for the jump algorithm and
+[`doc/keybinding.md`](doc/keybinding.md) for the full key reference.
+
 ## Docs
 
 | Doc | Covers |
 |---|---|
-| [`doc/config-reference.md`](doc/config-reference.md) | Full `config.toml` schema |
+| [`doc/config-reference.md`](doc/config-reference.md) | Full `config.toml` schema (profiles, size, labels, line_labels, colors) |
 | [`doc/keybinding.md`](doc/keybinding.md) | Shipped actions, binding a key, adding your own |
-| [`doc/flash-jump.md`](doc/flash-jump.md) | The jump-to-word / jump-to-line mechanic |
+| [`doc/flash-jump.md`](doc/flash-jump.md) | The word-jump algorithm + line-jump mechanic |
 | [`doc/use-cases.md`](doc/use-cases.md) | Worked walkthroughs |
 | [`doc/env-vars.md`](doc/env-vars.md) | The one env var involved |
 
@@ -50,8 +55,11 @@ as `config.toml`. Full schema: [`doc/config-reference.md`](doc/config-reference.
 
 | Key | Default | Description |
 |---|---|---|
-| `profiles` | `"viewport,200,2000"` | Comma-separated scrollback depth profiles. `viewport` = visible area only; a number = that many scrollback lines. |
-| `size` | `"90%x85%"` | Popup dimensions as `WIDTHxHEIGHT`. Percentages or absolute cells. |
+| `profiles` | `"viewport,200,2000"` | Comma-separated scrollback depth profiles. `viewport` = visible area only; a number = that many scrollback lines. Cycled with `g`. |
+| `size` | `"90%x85%"` | Popup dimensions as `WIDTHxHEIGHT`. **Advisory on Herdr** — the popup's actual size is set by `[[panes]]` `width`/`height` at manifest time (no live resize); recorded here for parity. |
+| `labels` | `"a-zA-Z"` (52 chars) | Characters used as word-jump (`s`) labels. Any printable non-whitespace chars; duplicates removed; order preserved. |
+| `line_labels` | `"directional"` | Line-jump (`l`) scheme: `directional` (a-z below, A-Z above) or `unified` (split `labels` in half). |
+| `color_*` | Catppuccin Macchiato | 15 theme roles (`color_sel_bg`, `color_cursor_bg`, `color_jump_label_bg`, …) as `#rrggbb`. Omit any to keep the default. |
 
 ## Keybinding
 
