@@ -771,6 +771,17 @@ confirmed in the Phase 1 / Phase 2 spikes.
   (does `crossterm` see a `Resize` event? does the popup honor it?)
   needs confirming in Phase 2. If unresizable live, the `size` config is
   launch-time only, matching the original.
+- **ANSI color in the scrollback buffer**: `pane.read` supports
+  `format: "ansi"` + `strip_ansi: false` — confirmed live, returns full
+  ANSI escape sequences (24-bit RGB color, bold, resets). The original
+  `zellij-flash` rendered **plain text, no ANSI color reproduction**
+  (its `doc/architecture.md` says so explicitly), so `format: "text"` +
+  `strip_ansi: true` (the API default) is parity. Phase 2 starts with
+  plain text (parity) and spikes ANSI passthrough (parsing ANSI into
+  `ratatui` `Style` spans) against the live render loop; the decision to
+  keep ANSI color is deferred to that spike. ANSI makes selection/cursor/
+  jump-label rendering more complex on top of styled cells, so it's a
+  beyond-parity candidate, not a v1 requirement.
 
 ## 13. Ideas beyond parity
 
