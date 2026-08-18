@@ -11,11 +11,21 @@
 # Verbosity of stderr diagnostics. One of: off, error, warn, info, debug.
 # log_level = "info"
 
-# Scrollback depth profiles available to bind to keybinds. Comma-separated.
-# Each entry is either "viewport" (visible area only) or a number of
-# scrollback lines. The first entry is the default profile used by the
-# `flash-open` action. Cycled inside the popup with `g`.
-# profiles = "viewport,200,2000"
+# Scrollback depth profiles available to bind to keybinds. The built-in
+# `default` profile (used when FLASH_PROFILE is unset) is below; define your
+# own [profiles.<name>] blocks and bind a key to an action that sets
+# FLASH_PROFILE=<name>. Cycled inside the popup with `g`.
+
+[profiles.default]
+# Comma-separated list of depths. Each entry is "viewport" (visible
+# area only) or a number of scrollback lines. First entry is active on
+# open; `g` cycles forward.
+depths = ["viewport", "200", "2000"]
+
+# Example: a deep-scrollback keybind. Bind an action that sets
+# FLASH_PROFILE=deep and `g` will cycle this list instead.
+# [profiles.deep]
+# depths = ["2000", "5000"]
 
 # Popup dimensions, as WIDTHxHEIGHT. Percentages (of the host pane) or
 # absolute cell counts. Advisory on Herdr — the popup's actual size is
@@ -24,25 +34,30 @@
 
 # Characters used as word-jump (`s`) labels. Any printable non-whitespace
 # chars; duplicates removed; order preserved. Fewer labels means more chars
-# must be typed before labels appear.
+# must be typed before labels appear. Global (not per-keybind).
 # labels = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 # Line-jump (`l`) label scheme. "directional" (default): a-z below cursor,
 # A-Z above. "unified": split `labels` in half, first half below, second
-# half above.
+# half above. Global (not per-keybind).
 # line_labels = "directional"
 
 # Theme colors — hex strings ("#rrggbb"). All default to Catppuccin
 # Macchiato. Omit any key to keep the default. See doc/config-reference.md
-# for the full list of 15 roles.
-# color_sel_bg          = "#8aadf4"
-# color_sel_fg          = "#24273a"
-# color_cursor_bg       = "#cad3f5"
-# color_cursor_fg       = "#24273a"
-# color_jump_label_bg   = "#f5a97f"
-# color_jump_label_fg   = "#24273a"
-# color_jump_match_fg   = "#ed8796"
-# color_jump_partial_fg = "#eed49f"
-# color_search_match_bg    = "#a6da95"
-# color_search_current_bg  = "#eed49f"
-# color_search_fg       = "#24273a"
+# for the full list of 16 roles. Global (not per-keybind).
+# color_sel_bg          = "#8aadf4"   # selection background
+# color_sel_fg          = "#24273a"   # selection foreground
+# color_cursor_bg       = "#cad3f5"   # cursor cell background
+# color_cursor_fg       = "#24273a"   # cursor cell foreground
+# color_gutter_mark     = "#eed49f"   # cursor-row gutter marker
+# color_gutter_dim      = "#6e738d"   # non-cursor gutter numbers
+# color_sel_label       = "#8bd5ca"   # "SEL N lines" footer label
+# color_footer_dim      = "#6e738d"   # footer status text
+# color_footer_key      = "#b8c0e0"   # footer key hint labels
+# color_jump_label_bg   = "#f5a97f"   # jump label background
+# color_jump_label_fg   = "#24273a"   # jump label foreground
+# color_jump_match_fg   = "#ed8796"   # jump matched-prefix highlight
+# color_jump_partial_fg = "#eed49f"   # jump partial-match highlight
+# color_search_match_bg    = "#a6da95"   # non-current search match bg
+# color_search_current_bg  = "#eed49f"   # current search match bg
+# color_search_fg       = "#24273a"   # search match foreground

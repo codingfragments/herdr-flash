@@ -320,7 +320,7 @@ scope.
 | Search `/` (input + nav phases, `n`/`N`, Space-to-anchor) | Phase 7 | only when no anchor |
 | Actions: `Enter` copy, `Shift-Enter` insert + Confirm dialog | Phase 8 | `arboard` + `pane.send_text` |
 | Profile cycling `g` (re-grab) | Phase 9 | |
-| Config: `profiles`, `size`, `labels`, `line_labels`, 15 `color_*` | Phase 9 | TOML under `$HERDR_PLUGIN_CONFIG_DIR` |
+| Config: `profiles`, `size`, `labels`, `line_labels`, 16 `color_*` | Phase 9 | TOML under `$HERDR_PLUGIN_CONFIG_DIR`; per-keybind depth via `[profiles.<name>]` |
 | Manifest + keybinding actions | Phase 10 | `[[actions]]` per profile |
 | CI, release, docs | Phase 11 | |
 
@@ -581,38 +581,68 @@ footer and that the popup stays open.
 ### Phase 9 — Profile cycling `g` + config + theme
 
 **Prompt:** Port the original's config surface, adapted to Herdr's TOML
-model. Add `config.rs` loading `$HERDR_PLUGIN_CONFIG_DIR/config.toml` once
-per launch (missing/unset/parse-error → built-in defaults, never crash;
-parse errors reported on stderr). Ship `config.example.toml` as the
-starter template (single source of truth, `include_str!`'d for the
-`Ctrl-W`-style write-default affordance if added). Support: `profiles`
-(comma-separated `viewport`/N, cycled with `g` — re-grab on cycle, reset
-cursor to bottom, clear selection), `labels` (word-jump charset),
-`line_labels` (`directional`/`unified`), `log_level`, and the 15
-`color_*` theme roles (hex `#rrggbb` parsing, Catppuccin Macchiato
-defaults). The `size` config key is **advisory only** on Herdr — the
-popup's actual dimensions are set by `[[panes]]` `width`/`height` at
-manifest time (no live popup resize, per §12); document this as a
-deliberate simplification versus the original. Wire `g` to cycle
-profiles and re-grab via `pane.read` with the new depth.
+model. The zellij version passes the **entire** config block per-keybind
+(`profiles`, `size`, `labels`, `line_labels`, 16 `color_*` roles) via the
+`configuration {}` block — so each keybind can launch with a different
+depth list, charset, and theme. The Herdr port splits this into three
+layers, mirroring the sister `herdr-zextract` port:
 
-**Scope:** `config.rs` (full schema), `config.example.toml`, `Theme`
-struct with hex parsing, `cycle_profile` + re-grab, `g` keybinding,
+- **Manifest** (`herdr-plugin.toml`, Phase 10): `size` → `[[panes]]`
+  `width`/`height`. Single popup, single size — a deliberate
+  simplification (no live resize, per §12). Per-keybind size is
+  achievable by declaring multiple `[[panes]]` entries, but one ships by
+  default.
+- **Global config** (`config.toml`, top-level): `log_level`, `labels`
+  (word-jump charset), `line_labels` (`directional`/`unified`), and the
+  16 `color_*` theme roles (hex `#rrggbb` parsing, Catppuccin Macchiato
+  defaults). These are preferences, not per-launch concerns, so they
+  live globally — matching how the sister port keeps `[colors]` global.
+- **Per-keybind profiles** (`[profiles.<name>]` in `config.toml`):
+  `depths` (the scrollback-depth cycle list for `g` — e.g.
+  `["viewport", "200", "2000"]`), selected at launch by
+  `FLASH_PROFILE=<name>` (set on the manifest action's `command` via
+  `--env`). This is the direct analog of the sister port's
+  `[profiles.<name>].grab` and the primary per-keybind lever from the
+  original. A built-in `default` profile (used when `FLASH_PROFILE` is
+  unset) carries `["viewport", "200", "2000"]`.
+
+This reaches practical parity with the original: every config key the
+zellij version accepts is settable, and per-keybind depth (the main
+per-launch lever) is preserved. The one deliberate simplification versus
+zellij is that `labels`/`line_labels`/theme are global rather than
+per-keybind — documented in `doc/config-reference.md` as a deliberate
+collapse of preference-level settings, matching the sister port's
+philosophy.
+
+Add `config.rs` loading `$HERDR_PLUGIN_CONFIG_DIR/config.toml` once per
+launch (missing/unset/parse-error → built-in defaults, never crash;
+parse errors reported on stderr). Ship `config.example.toml` as the
+starter template (single source of truth, `include_str!`'d for a
+`Ctrl-W`-style write-default affordance if added). Wire `g` to cycle
+the active profile's `depths` list and re-grab via `pane.read` with the
+new depth (reset cursor to bottom, clear selection).
+
+**Scope:** `config.rs` (full schema: global keys + `[profiles.<name>]`
+with `depths`), `config.example.toml`, `Theme` struct with hex parsing
+for all 16 roles, `cycle_profile` + re-grab, `g` keybinding,
 `doc/config-reference.md`.
 
-**Out of scope:** manifest actions (Phase 10), CI (Phase 11).
+**Out of scope:** manifest `[[actions]]` (Phase 10), CI (Phase 11).
 
 **Manual test plan:**
 1. `just relink`.
-2. `g` cycles through `viewport`/`200`/`2000` and re-grabs; cursor
-resets to the bottom, selection clears, footer profile label updates.
-3. Drop a `config.toml` with custom `profiles` + `labels` (home-row
-only) — confirm `g` cycles the custom set and word-jump uses the
-shorter charset (reaches labeled state faster).
-4. Set `line_labels = "unified"` — confirm line-jump splits the
+2. `g` cycles through `viewport`/`200`/`2000` (the built-in `default`
+profile) and re-grabs; cursor resets to the bottom, selection clears,
+footer profile label updates.
+3. Drop a `config.toml` with `[profiles.deep] depths = ["2000", "5000"]`
+and bind a key to an action that sets `FLASH_PROFILE=deep`; confirm `g`
+cycles that keybind's own list, not the default.
+4. Set global `labels = "asdfjkl;"` (home-row only) — confirm word-jump
+uses the shorter charset (reaches labeled state faster).
+5. Set `line_labels = "unified"` — confirm line-jump splits the
 configured `labels` charset in half.
-5. Override a `color_*` key — confirm the new color renders.
-6. Malformed `config.toml` → stderr message + built-in defaults, no
+6. Override a `color_*` key — confirm the new color renders.
+7. Malformed `config.toml` → stderr message + built-in defaults, no
 crash.
 
 ### Phase 10 — Manifest + keybinding actions + docs
