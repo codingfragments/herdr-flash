@@ -43,9 +43,12 @@ input/copy actions (was host action calls, now `pane.send_text` +
 ```
 ┌─────────────────────────────────────────────┐
 │ herdr-plugin.toml                            │
-│  - [[panes]] entry: placement = "popup"      │
+│  - [[panes]] entry: placement = "popup"       │
 │    command = ["./target/release/herdr-flash"] │
-│    width/height ~ original "size" config      │
+│    width/height = 90%/90% (matches the       │
+│     original "size" config; overlay was       │
+│     investigated but covers the whole         │
+│     workspace, not just the active pane)      │
 │  - [[actions]]: thin `herdr plugin pane open` │
 │    invocations selecting a profile via --env  │
 │    FLASH_PROFILE (profile values live in the  │
@@ -69,8 +72,11 @@ input/copy actions (was host action calls, now `pane.send_text` +
 │     - crossterm backend (new — previously     │
 │       host-owned) + ratatui                  │
 │     - relative line numbers, cursor           │
-│     - no alt-screen; draws over the popup's   │
-│       own buffer, terminal.clear() on enter   │
+│     - renders into a centered popup box        │
+│       (90%x90% of the workspace, matching       │
+│       the original float); no alt-screen;      │
+│       draws over the popup's own buffer,       │
+│       terminal.clear() on enter                │
 │                                               │
 │  3. flash.rs (ported ~as-is)                 │
 │     - jump-to-word / jump-to-line label       │
@@ -92,11 +98,11 @@ input/copy actions (was host action calls, now `pane.send_text` +
 | Original (`zellij-tile`) | Herdr equivalent (confirmed live) |
 |---|---|
 | Plugin registration, `register_plugin!` | `herdr-plugin.toml` manifest, `[[panes]]` entry |
-| Keybind → `LaunchOrFocusPlugin` | `[[actions]]` → `herdr plugin pane open --env FLASH_PROFILE=<name>`; bound via `[[keys.command]]` `type = "plugin_action"` in the user's own config |
+| Keybind → `LaunchOrFocusPlugin` | `[[actions]]` → `herdr plugin pane open --placement popup --env FLASH_PROFILE=<name>`; bound via `[[keys.command]]` `type = "plugin_action"` in the user's own config |
 | Host owns terminal I/O; plugin issues render calls | Plugin owns a real PTY; `crossterm` backend directly (no alt-screen) |
 | Read focused pane content + scrollback depth (`profiles`) | `pane.read` with `source = "visible"` (viewport) or `"recent_unwrapped"` + `lines: u32` (N scrollback); response at `result.read.text` |
 | Write/paste into pane | `pane.send_text` with `{"pane_id", "text"}` (not `send_input`) |
-| Floating pane `size` config (`WIDTHxHEIGHT`) | Popup `width`/`height` in `[[panes]]` (cells or %) |
+| Floating pane `size` config (`WIDTHxHEIGHT`) | Popup `width`/`height` in `[[panes]]` (cells or %); advisory since popup can't be resized live (per sister port). Overlay was investigated but covers the whole workspace, not just the active pane — not adopted. |
 | Clipboard (host `Clipboard` action) | `arboard` crate directly |
 
 > The `pane.send_text` (not `pane.send_input`) and `recent_unwrapped`
@@ -734,16 +740,30 @@ confirmed in the Phase 1 / Phase 2 spikes.
   needed. GitHub-hosted `ubuntu-24.04-arm` runners are GA and available in
   private repos too. Use native ARM runners directly in `release.yml`.
 
-### Flash-specific, to confirm in the Phase 1 / Phase 2 spikes
+### Flash-specific, confirmed in the Phase 1 spike
 
+- **Overlay placement (investigated, not adopted)**: `herdr plugin pane
+  open --placement overlay` works for plugin panes, but Herdr's overlay
+  covers the **whole workspace**, not just the active pane's rect —
+  confirmed live (the binary string "overlay and popup plugin panes
+  target the active pane" means they tie to the active pane for
+  *context*, but the overlay rect is workspace-wide; `--target-pane` is
+  rejected for overlay/popup with that same error). A pane-scoped overlay
+  ("overlay just the left pane") is not achievable with Herdr's current
+  placement model. The faithful port of the original zellij-flash float
+  (`size "90%x90%"`) is **popup at 90%x90%** — centered, sizable, and
+  smaller than a full-workspace overlay. The `size` config key is
+  advisory on Herdr (popup can't be resized live either, per the sister
+  port's finding): the manifest's `[[panes]]` `width`/`height` set the
+  launch size, and the `size` config key in `config.toml` is vestigial.
+  The sister `herdr-zextract` port also uses popup (80%x80%); both
+  plugins now converge on popup as the right Herdr placement.
 - **Mouse events in a plugin popup pane**: Herdr advertises first-class
   mouse support (click/drag/right-click) at the runtime level — worth
   checking whether a plugin popup pane can receive raw mouse events via
   `crossterm`, which could make selection nicer than the original's
-  keyboard-only flash navigation. The sister port did not pursue this
-  (its picker is keyboard-only); flash should spike it in Phase 2 once
-  the render loop is live, since mouse-drag selection is a natural fit
-  for a scrollback view. Not required for parity.
+  keyboard-only flash navigation. Not required for parity; spike in Phase 2
+  once the render loop is live.
 - **Popup live resize**: the sister port confirmed there is **no**
   live-resize equivalent for a popup pane mid-session — its preview pane
   is an internal split of the picker's own fixed render area instead.
@@ -751,6 +771,17 @@ confirmed in the Phase 1 / Phase 2 spikes.
   (does `crossterm` see a `Resize` event? does the popup honor it?)
   needs confirming in Phase 2. If unresizable live, the `size` config is
   launch-time only, matching the original.
+- **ANSI color in the scrollback buffer**: `pane.read` supports
+  `format: "ansi"` + `strip_ansi: false` — confirmed live, returns full
+  ANSI escape sequences (24-bit RGB color, bold, resets). The original
+  `zellij-flash` rendered **plain text, no ANSI color reproduction**
+  (its `doc/architecture.md` says so explicitly), so `format: "text"` +
+  `strip_ansi: true` (the API default) is parity. Phase 2 starts with
+  plain text (parity) and spikes ANSI passthrough (parsing ANSI into
+  `ratatui` `Style` spans) against the live render loop; the decision to
+  keep ANSI color is deferred to that spike. ANSI makes selection/cursor/
+  jump-label rendering more complex on top of styled cells, so it's a
+  beyond-parity candidate, not a v1 requirement.
 
 ## 13. Ideas beyond parity
 

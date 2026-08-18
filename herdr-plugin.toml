@@ -1,0 +1,38 @@
+id = "herdr-flash"
+name = "herdr-flash"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+[[panes]]
+id = "flash"
+title = "flash"
+command = ["./target/release/herdr-flash"]
+placement = "popup"
+width = "90%"
+height = "90%"
+
+# Launcher actions: each is a thin invocation of `herdr plugin pane
+# open` for the "flash" pane above, selecting a named *profile* via
+# --env FLASH_PROFILE - the profile's actual depth cycle list lives in
+# the user's own config.toml under [profiles.<name>], never here (see
+# doc/config-reference.md). Actions run headlessly (no real PTY), so
+# they can't be the popup itself; they just fire the real popup open,
+# which does get a real PTY. Bind a key to each action's id via a
+# `[[keys.command]]` entry with `type = "plugin_action"` in your own
+# ~/.config/herdr/config.toml - see doc/keybinding.md.
+#
+# Placement is popup (centered, sizable) rather than overlay. Herdr's
+# overlay covers the whole workspace, not just the active pane's rect
+# (confirmed live: "overlay and popup plugin panes target the active
+# pane" but the overlay rect is workspace-wide; --target-pane is
+# rejected for overlay/popup). Popup at 90%x90% replicates the original
+# zellij-flash float (size "90%x90%") - the faithful port.
+
+[[actions]]
+id = "flash-open"
+title = "flash: scrollback selector"
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--placement", "popup", "--env", "FLASH_PROFILE=default"]
