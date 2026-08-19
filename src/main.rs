@@ -804,10 +804,14 @@ impl State {
         }
     }
 
-    /// `Shift-Enter` — insert the selection into the source pane via
+    /// `p` — insert the selection into the source pane via
     /// `pane.send_text` and close. Warn if no selection. Multi-line
     /// selections enter `Mode::Confirm` first; single-line inserts
     /// immediately. Returns `true` to stay open, `false` to close.
+    ///
+    /// (Originally bound to Shift-Enter, but Shift-Enter is
+    /// indistinguishable from plain Enter in legacy keyboard mode — most
+    /// terminals send the same bytes for both. `p` = paste into pane.)
     fn action_insert(&mut self) -> bool {
         let Some(text) = self.selected_text() else {
             self.message = Some("No selection — press Space to anchor".to_string());
@@ -1303,7 +1307,7 @@ impl State {
                 Span::raw(":search  "),
                 Span::styled("Enter", bold),
                 Span::raw(":copy  "),
-                Span::styled("Shift-Enter", bold),
+                Span::styled("p", bold),
                 Span::raw(":insert  "),
                 Span::styled("Space", bold),
                 Span::raw(":select  "),
@@ -1552,9 +1556,15 @@ fn run_loop(
             }
             // ── Actions (Phase 8) ──────────────────────────────────────────
             // `Enter` copies the selection to the clipboard and closes;
-            // `Shift-Enter` inserts into the source pane and closes.
-            // Both warn + stay open if there's no selection.
-            KeyCode::Enter if only_shift => {
+            // `p` inserts into the source pane and closes. Both warn +
+            // stay open if there's no selection.
+            //
+            // Note: `p` (not Shift-Enter) is the insert binding because
+            // Shift-Enter is indistinguishable from plain Enter in legacy
+            // keyboard mode — most terminals send the same bytes for both,
+            // so crossterm can't tell them apart. `p` = paste into pane
+            // (vim-style), always works.
+            KeyCode::Char('p') => {
                 if state.action_insert() {
                     continue;
                 }
