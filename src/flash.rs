@@ -197,6 +197,43 @@ pub fn compute_jump_labels(
     (labels, Vec::new())
 }
 
+/// Compute line-jump labels for the visible viewport.
+///
+/// Returns `(line, label_char)` pairs — one per visible line except the
+/// cursor line (which has no label). Default **directional** scheme:
+/// `a`-`z` for lines below the cursor (`a` = nearest), `A`-`Z` for lines
+/// above (`A` = nearest). The `unified` scheme (splitting the label
+/// charset in half) is config-driven and lands in Phase 9; ship the
+/// directional scheme now.
+///
+/// Unlike `compute_jump_labels`, this is instant — no prefix typing,
+/// no partial fallback. Every visible line (except the cursor line) gets
+/// a label the moment `l` is pressed.
+pub fn compute_line_labels(
+    lines: &[Vec<StyledChar>],
+    scroll_y: usize,
+    content_rows: usize,
+    cursor: (usize, usize),
+) -> Vec<(usize, char)> {
+    let vis_start = scroll_y;
+    let vis_end = (scroll_y + content_rows).min(lines.len());
+    let cline = cursor.0;
+
+    let below = (vis_start..vis_end).filter(|&l| l > cline);
+    let above = (vis_start..cline.min(vis_end)).rev();
+
+    let mut labels: Vec<(usize, char)> = Vec::new();
+
+    // Directional scheme: a-z below (nearest = a), A-Z above (nearest = A).
+    for (line, lc) in below.zip('a'..='z') {
+        labels.push((line, lc));
+    }
+    for (line, lc) in above.zip('A'..='Z') {
+        labels.push((line, lc));
+    }
+    labels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +376,67 @@ mod tests {
             assert_ne!(lc, 'x', "ambiguous continuation must not be a label");
             assert_ne!(lc, 'X');
         }
+    }
+
+    // ── Line-jump tests (Phase 6) ───────────────────────────────────────────
+
+    #[test]
+    fn line_jump_labels_all_visible_except_cursor() {
+        // 5 lines, cursor on line 2. Lines 0,1 above; lines 3,4 below.
+        let lines = styled_lines("a\nb\nc\nd\ne");
+        let labels = compute_line_labels(&lines, 0, 10, (2, 0));
+        // 4 labels (all except cursor line 2).
+        assert_eq!(labels.len(), 4);
+        // Below: lines 3,4 → a,b
+        // Above (reversed): lines 1,0 → A,B
+        let by_line: std::collections::HashMap<usize, char> = labels.iter().cloned().collect();
+        assert_eq!(by_line[&3], 'a', "nearest below = a");
+        assert_eq!(by_line[&4], 'b');
+        assert_eq!(by_line[&1], 'A', "nearest above = A");
+        assert_eq!(by_line[&0], 'B');
+        assert!(!by_line.contains_key(&2), "cursor line has no label");
+    }
+
+    #[test]
+    fn line_jump_cursor_at_top() {
+        // Cursor on line 0 → all labels are below (a-z).
+        let lines = styled_lines("a\nb\nc");
+        let labels = compute_line_labels(&lines, 0, 10, (0, 0));
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0], (1, 'a'));
+        assert_eq!(labels[1], (2, 'b'));
+    }
+
+    #[test]
+    fn line_jump_cursor_at_bottom() {
+        // Cursor on last line → all labels are above (A-Z).
+        let lines = styled_lines("a\nb\nc");
+        let labels = compute_line_labels(&lines, 0, 10, (2, 0));
+        assert_eq!(labels.len(), 2);
+        // Above reversed: line 1 = A, line 0 = B
+        assert_eq!(labels[0], (1, 'A'));
+        assert_eq!(labels[1], (0, 'B'));
+    }
+
+    #[test]
+    fn line_jump_respects_scroll_window() {
+        // 5 lines, scroll_y=1, content_rows=2 → only lines 1,2 visible.
+        let lines = styled_lines("a\nb\nc\nd\ne");
+        let labels = compute_line_labels(&lines, 1, 2, (1, 0));
+        // Only line 2 is visible and below cursor → one label 'a'.
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0], (2, 'a'));
+    }
+
+    #[test]
+    fn line_jump_more_than_26_lines() {
+        // 30 lines below cursor → only 26 get labels (a-z runs out).
+        let text: String = (0..31).map(|i| format!("line{i}\n")).collect();
+        let lines = styled_lines(text.trim_end());
+        let labels = compute_line_labels(&lines, 0, 31, (0, 0));
+        // 30 lines below, but only 26 letters → 26 labels.
+        assert_eq!(labels.len(), 26);
+        assert_eq!(labels[0], (1, 'a'));
+        assert_eq!(labels[25], (26, 'z'));
     }
 }
