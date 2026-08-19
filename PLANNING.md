@@ -865,6 +865,15 @@ confirmed in the Phase 1 / Phase 2 spikes.
 - Live scrollback (via `events.subscribe`) instead of a static snapshot,
   for panes that are still actively producing output while the flash view
   is open.
+- **Count/repeat prefix for motions** (vim-style `5w`, `10B`, `2$`). The
+  original `zellij-flash` has no digit accumulator — every motion is a
+  single step. This would add a Normal-mode digit prefix that multiplies
+  the next motion (`w`/`W`/`b`/`B`/`e`/`E`/`0`/`$`, and later jump/search
+  nav). Nicest payoff after Phase 4 (selection) lands, so `5w` extends a
+  selection by 5 words in one go. Small state machine wrinkle: `0` is the
+  line-start motion *unless* a count digit is already being typed, in
+  which case `0` is part of the number (`10w`) — handle that explicitly.
+  Do as its own `feature/` branch, not in a phase.
 
 ## License
 
