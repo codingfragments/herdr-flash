@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners only - no cross/QEMU needed for any target
+          # (see PLANNING.md §12's confirmed-live aarch64-linux finding).
+          # No x86_64-apple-darwin (Intel Mac) - not worth the CI minutes
+          # for a platform with negligible remaining install base among
+          # this plugin's users; build from source there instead.
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Strip and package
+        run: |
+          set -euo pipefail
+          cd target/${{ matrix.target }}/release
+          strip herdr-flash
+          archive="herdr-flash-${{ matrix.target }}.tar.gz"
+          tar czf "$archive" herdr-flash
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herdr-flash-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/herdr-flash-${{ matrix.target }}.tar.gz
+            target/${{ matrix.target }}/release/herdr-flash-${{ matrix.target }}.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+
+      # Rolling "latest" tag/release, alongside the versioned one above -
+      # lets `herdr plugin install <owner>/<repo> --ref latest` (or any
+      # git-ref-based install) track the newest tagged release without
+      # naming a specific version. Force-moved to this tag's commit on
+      # every release; make_latest is explicitly false so this doesn't
+      # steal the "Latest release" badge from the real semver tag.
+      - name: Move the "latest" tag to this release
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f latest "${GITHUB_SHA}"
+          git push origin latest --force
+
+      - name: Publish rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest
+          files: artifacts/*
+          make_latest: false
+          body: |
+            Rolling alias for the newest tagged release - currently ${{ github.ref_name }}.
+            Pinned installs should use a specific version tag instead.

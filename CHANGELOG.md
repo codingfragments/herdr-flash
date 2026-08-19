@@ -1,12 +1,66 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-08-19
 
-No releases yet — the project is in the planning phase (see
-[PLANNING.md §11](PLANNING.md#11-implementation-phases) for the
-implementation roadmap). The first tagged release will be `v0.1.0`.
+First release: a Herdr port of the `zellij-flash` plugin, reaching
+functional parity with the original plus a few Herdr-native additions.
+
+### Added
+
+- **Scrollback view** with relative line numbers, cursor, 2-line footer,
+  arrow-key + half-page navigation, horizontal scroll with `…` overflow
+  indicators (Phase 2).
+- **ANSI color reproduction** — the popup renders the source pane's
+  ANSI colors and font attributes, not just plain text (beyond parity
+  with the original, which rendered plain text only).
+- **Word motions** `w`/`W`/`b`/`B`/`e`/`E`/`0`/`$` (Phase 3).
+- **Selection model** with `Space` toggle, Esc cancel chain, and a
+  teal gutter cue when selection mode is active (Phase 4).
+- **Word-jump** `s`/`S` with nvim-flash-style labels: distance ordering,
+  typed-char exclusion, continuation-aware exclusion, partial-match
+  fallback. `S` plants the selection anchor at the destination (Phase 5).
+- **Line-jump** `l`/`L` with gutter labels (directional scheme:
+  a-z below, A-Z above). `L` plants the anchor (Phase 6).
+- **Incremental search** `/` with input + nav phases, `n`/`N` cycling
+  with wrap, `Space`-to-anchor (Phase 7).
+- **Actions**: `Enter` copies the selection to the clipboard via
+  `arboard`; `p` inserts into the source pane via `pane.send_text`.
+  Multi-line inserts get a `y`/`Enter` confirm dialog (Phase 8).
+- **Config + profile cycling**: `config.toml` with `log_level`,
+  `labels`, `line_labels`, 16 `color_*` theme roles, and
+  `[profiles.<name>]` depth cycle lists selected by `FLASH_PROFILE`.
+  `g` cycles depths and re-grabs. Built-in default profile:
+  `["200", "5000", "unlimited", "viewport"]` (Phase 9).
+- **Keybinding dialog** `?` — replaces the always-visible footer hints
+  with an on-demand two-column overlay (Phase 9b).
+- **Manifest** with four `[[actions]]` (`flash-open`, `flash-200`,
+  `flash-2000`, `flash-unlimited`), `[[build]]` step, popup at
+  90%x85% (Phase 10).
+- **Docs**: `doc/keybinding.md`, `doc/env-vars.md`,
+  `doc/config-reference.md`, `doc/use-cases.md`, `doc/flash-jump.md`.
+- **CI**: `ci.yml` (fmt/clippy/test on macOS + Linux) and `release.yml`
+  (tag-triggered, 3 target triples, SHA-256, rolling `latest` release).
+- 53 unit tests covering ANSI parsing, word motions, selection, word-jump
+  labels, line-jump labels, search, and config.
+
+### Changed from the original `zellij-flash`
+
+- **Host**: Zellij WASM plugin → Herdr native process with a real PTY.
+- **Rendering**: host-mediated draw calls → `crossterm` backend directly.
+- **Scrollback acquisition**: host-provided → `pane.read` socket API
+  (`source = "recent_unwrapped"` / `"visible"`).
+- **Insert action**: host action → `pane.send_text` (not `send_input`).
+- **Clipboard**: host `Clipboard` action → `arboard` crate.
+- **Config**: KDL `configuration {}` block → TOML `config.toml` under
+  `$HERDR_PLUGIN_CONFIG_DIR`; `labels`/`line_labels`/theme collapsed to
+  global (not per-keybind), matching the sister `herdr-zextract` port.
+- **Insert keybinding**: `Shift-Enter` → `p` (Shift-Enter is
+  indistinguishable from Enter in legacy keyboard mode).
+- **Default depths**: `viewport, 200, 2000` → `200, 5000, unlimited,
+  viewport` (viewport last, since it's rarely the useful mode).
+- **Keybinding hints**: always-visible footer line → on-demand `?` dialog.
