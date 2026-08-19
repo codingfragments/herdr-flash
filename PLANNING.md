@@ -874,6 +874,19 @@ confirmed in the Phase 1 / Phase 2 spikes.
   line-start motion *unless* a count digit is already being typed, in
   which case `0` is part of the number (`10w`) — handle that explicitly.
   Do as its own `feature/` branch, not in a phase.
+- **Block / columnar selection mode** (toggle between stream selection and
+  block selection while an anchor is set). The original `zellij-flash`
+  selects only in stream order (`min(anchor,cursor)..=max`), so a selection
+  spanning lines of different lengths picks up trailing chars on the
+  longer lines. A block mode would select a rectangular column
+  `[min_row..=max_row] × [min_col..=max_col]`, clamping each line to its
+  own length — closer to vim's visual-block (`Ctrl-V`). Toggle key while
+  an anchor is set (e.g. `Ctrl-V` or a dedicated key) flips the active
+  selection between stream and block; `selected_text` for a block would
+  join the per-line clamped slices. Interacts with copy/insert (Phase 8)
+  and with the count-prefix idea above. Do as its own `feature/` branch
+  after Phase 4 (selection) and Phase 8 (copy/insert) land, so the
+  toggle and the plain-text extraction both have a stable base.
 
 ## License
 
