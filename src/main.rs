@@ -184,6 +184,14 @@ enum Mode {
 struct State {
     lines: Vec<Vec<StyledChar>>,
     cursor: (usize, usize),
+    /// Selection anchor. When `Some`, the selection spans
+    /// `min(anchor, cursor)..=max(anchor, cursor)` in stream order and
+    /// renders with a blue background (replace policy — overrides the
+    /// base ANSI style on touched cells). Orthogonal to `mode`: every
+    /// cursor move (arrows, motions — and later, jump/search-nav) extends
+    /// the selection while the anchor is set. `Space` toggles it; the Esc
+    /// chain clears it before closing the popup.
+    anchor: Option<(usize, usize)>,
     /// Preferred column for vertical movement (vim-style): moving up/down
     /// clamps the cursor to the line length but remembers this value,
     /// snapping back to it when a later line is long enough. Horizontal
@@ -204,6 +212,7 @@ impl Default for State {
         Self {
             lines: Vec::new(),
             cursor: (0, 0),
+            anchor: None,
             preferred_col: 0,
             scroll_y: 0,
             scroll_x: 0,
@@ -427,6 +436,76 @@ impl State {
         self.scroll_x_into_view();
     }
 
+    // ── Selection (Phase 4) ───────────────────────────────────────────────────
+    //
+    // Ported from the original. `anchor` is orthogonal to `mode`: every
+    // cursor move (arrows, motions — and later, jump/search-nav) extends
+    // the selection while the anchor is set. `Space` toggles; the Esc
+    // chain clears the anchor before closing the popup. Selection renders
+    // with the replace policy (blue bg overrides base ANSI style).
+
+    /// Normalized selection range `(start, end)` in stream order, or None
+    /// when no anchor is set. `start <= end` lexicographically.
+    fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let anchor = self.anchor?;
+        let cursor = self.cursor;
+        if anchor <= cursor {
+            Some((anchor, cursor))
+        } else {
+            Some((cursor, anchor))
+        }
+    }
+
+    /// Extract the selected text as a plain string (styles stripped) via
+    /// `styled_line_to_plain_text`. This is the conversion contract for
+    /// the action boundary (copy/insert land in Phase 8) — no style bytes
+    /// reach the output.
+    #[allow(dead_code)] // used from Phase 8 (copy/insert)
+    fn selected_text(&self) -> Option<String> {
+        let ((sl, sc), (el, ec)) = self.selection_range()?;
+
+        if sl == el {
+            let line = self.lines.get(sl)?;
+            let start = sc.min(line.len());
+            let end = (ec + 1).min(line.len());
+            return Some(styled_line_to_plain_text(&line[start..end]));
+        }
+
+        let mut out = String::new();
+        if let Some(line) = self.lines.get(sl) {
+            let start = sc.min(line.len());
+            out.push_str(&styled_line_to_plain_text(&line[start..]));
+            out.push('\n');
+        }
+        for l in sl + 1..el {
+            if let Some(line) = self.lines.get(l) {
+                out.push_str(&styled_line_to_plain_text(line));
+                out.push('\n');
+            }
+        }
+        if let Some(line) = self.lines.get(el) {
+            let end = (ec + 1).min(line.len());
+            out.push_str(&styled_line_to_plain_text(&line[..end]));
+        }
+        Some(out)
+    }
+
+    /// `(line_count, char_count)` for the active selection, or None.
+    /// Used by the footer's `SEL N lines M chars` indicator.
+    fn selection_info(&self) -> Option<(usize, usize)> {
+        let ((sl, sc), (el, ec)) = self.selection_range()?;
+        let lines = el - sl + 1;
+        let chars = if sl == el {
+            ec.saturating_sub(sc) + 1
+        } else {
+            let first = self.line_len(sl).saturating_sub(sc) + 1; // +1 for newline
+            let last = ec + 1;
+            let mid: usize = (sl + 1..el).map(|l| self.line_len(l) + 1).sum();
+            first + mid + last
+        };
+        Some((lines, chars))
+    }
+
     fn scroll_cursor_into_view(&mut self) {
         if self.cursor.0 < self.scroll_y {
             self.scroll_y = self.cursor.0;
@@ -517,6 +596,12 @@ impl State {
             .fg(self.theme.gutter_cursor)
             .add_modifier(Modifier::BOLD);
 
+        // Normalized selection range (stream order), computed once for the
+        // whole viewport. Per-line display ranges are derived inside the
+        // map via `sel_range_for_line`, then shifted into display space
+        // (relative to scroll_x).
+        let sel = self.selection_range();
+
         let content_lines: Vec<Line<'static>> = visible
             .iter()
             .enumerate()
@@ -563,6 +648,26 @@ impl State {
                     None
                 };
 
+                // Selection range for this line, in display space.
+                // `sel_range_for_line` returns logical (start_col, end_col)
+                // inclusive; shift by scroll_x so they index into `cells`.
+                // Skip if the selection on this line is entirely off-screen
+                // (ends before scroll_x, or starts after the visible window).
+                let sel_disp = sel
+                    .and_then(|(s, e)| render::sel_range_for_line(s, e, abs, logical_len))
+                    .and_then(|(s, e)| {
+                        let visible_end = scroll_x + cells.len();
+                        if e < scroll_x || s >= visible_end {
+                            None
+                        } else {
+                            let ds = s.saturating_sub(scroll_x);
+                            let de = e
+                                .min(visible_end.saturating_sub(1))
+                                .saturating_sub(scroll_x);
+                            Some((ds, de.min(cells.len().saturating_sub(1))))
+                        }
+                    });
+
                 let mut spans = vec![gutter];
                 if has_left_overflow {
                     spans.push(Span::styled(
@@ -570,7 +675,12 @@ impl State {
                         Style::default().fg(self.theme.footer_dim),
                     ));
                 }
-                spans.extend(render::build_line_spans(&cells, cur_col, &self.theme));
+                spans.extend(render::build_line_spans(
+                    &cells,
+                    cur_col,
+                    sel_disp,
+                    &self.theme,
+                ));
                 if has_right_overflow {
                     spans.push(Span::styled(
                         "…",
@@ -597,8 +707,8 @@ impl State {
             format!("{}:{}", cline + 1, ccol + 1)
         };
 
-        // Status line: profile label, line count, cursor pos.
-        let line1_spans = vec![
+        // Status line: profile label, line count, cursor pos, selection info.
+        let mut line1_spans = vec![
             Span::raw(" "),
             Span::styled("[scrollback]", dim),
             Span::raw("  "),
@@ -606,17 +716,24 @@ impl State {
             Span::raw("  "),
             Span::styled(pos_str, dim),
         ];
+        if let Some((nlines, nchars)) = self.selection_info() {
+            line1_spans.push(Span::raw("  "));
+            line1_spans.push(Span::styled(
+                format!("SEL {} lines {} chars", nlines, nchars),
+                Style::default().fg(self.theme.sel_indicator),
+            ));
+        }
         let line1 = Line::from(line1_spans);
 
-        // Key-hint line (Phase 2: only basic nav).
+        // Key-hint line (Phase 4: basic nav + Space + motions).
         let mut line2_spans = vec![
             Span::raw(" "),
             Span::styled("↑↓←→", bold),
             Span::raw(":move  "),
-            Span::styled("PgUp/PgDn", bold),
-            Span::raw(":half-page  "),
-            Span::styled("Shift-←/→", bold),
-            Span::raw(":pan  "),
+            Span::styled("w/W/b/B/e/E", bold),
+            Span::raw(":word  "),
+            Span::styled("Space", bold),
+            Span::raw(":select  "),
             Span::styled("Esc", bold),
             Span::raw(":close"),
         ];
@@ -705,7 +822,17 @@ fn run_loop(
             && !key.modifiers.contains(KeyModifiers::ALT);
 
         match key.code {
-            KeyCode::Esc => break,
+            // Esc cancel chain (Phase 4): in a mode → cancel mode (no
+            // modes yet, so this is a no-op for now); else if anchor set →
+            // clear anchor; else → close the popup. Later phases insert the
+            // mode-cancel branch ahead of the anchor check.
+            KeyCode::Esc => {
+                if state.anchor.is_some() {
+                    state.anchor = None;
+                } else {
+                    break;
+                }
+            }
             KeyCode::Up => state.move_up(),
             KeyCode::Down => state.move_down(),
             KeyCode::Left if only_shift => {
@@ -736,6 +863,19 @@ fn run_loop(
             KeyCode::Char('E') => state.motion_e(true),
             KeyCode::Char('0') => state.motion_line_start(),
             KeyCode::Char('$') => state.motion_line_end(),
+            // ── Selection (Phase 4) ─────────────────────────────────────
+            // `Space` toggles: set anchor at cursor, or if already set,
+            // swap cursor/anchor (jump cursor to the old anchor end, anchor
+            // the old cursor). Clearing is via Esc, not Space.
+            KeyCode::Char(' ') => {
+                if let Some(anchor) = state.anchor {
+                    state.anchor = Some(state.cursor);
+                    state.cursor = anchor;
+                    state.scroll_cursor_into_view();
+                } else {
+                    state.anchor = Some(state.cursor);
+                }
+            }
             _ => {}
         }
     }
@@ -977,5 +1117,93 @@ mod tests {
         plain.motion_e(false);
         styled.motion_e(false);
         assert_eq!(plain.cursor, styled.cursor);
+    }
+
+    // ── Selection tests (Phase 4) ───────────────────────────────────────────
+
+    #[test]
+    fn selection_range_none_without_anchor() {
+        let s = state_from_text("foo bar");
+        assert!(s.selection_range().is_none());
+        assert!(s.selection_info().is_none());
+        assert!(s.selected_text().is_none());
+    }
+
+    #[test]
+    fn selection_range_normalizes_to_stream_order() {
+        let mut s = state_from_text("foo bar\nbaz qux");
+        // anchor after cursor → range should normalize to (cursor, anchor).
+        s.cursor = (0, 2);
+        s.anchor = Some((1, 3));
+        assert_eq!(s.selection_range(), Some(((0, 2), (1, 3))));
+        // anchor before cursor → already in order.
+        s.cursor = (1, 3);
+        s.anchor = Some((0, 2));
+        assert_eq!(s.selection_range(), Some(((0, 2), (1, 3))));
+    }
+
+    #[test]
+    fn selection_info_single_line() {
+        let mut s = state_from_text("hello world");
+        s.cursor = (0, 0);
+        s.anchor = Some((0, 4));
+        assert_eq!(s.selection_info(), Some((1, 5))); // 1 line, 5 chars
+    }
+
+    #[test]
+    fn selection_info_multi_line() {
+        let mut s = state_from_text("foo bar\nbaz qux\nlast");
+        s.cursor = (0, 4); // 'b' of bar
+        s.anchor = Some((2, 2)); // 's' of last
+        let (lines, chars) = s.selection_info().unwrap();
+        assert_eq!(lines, 3);
+        // first: line_len(0)=7 - 4 + 1(newline) = 4
+        // mid:   line_len(1)=7 + 1 = 8
+        // last:  2 + 1 = 3
+        // total = 4 + 8 + 3 = 15
+        assert_eq!(chars, 15);
+    }
+
+    #[test]
+    fn selected_text_single_line() {
+        let mut s = state_from_text("hello world");
+        s.cursor = (0, 0);
+        s.anchor = Some((0, 4));
+        assert_eq!(s.selected_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn selected_text_multi_line() {
+        let mut s = state_from_text("foo bar\nbaz qux\nlast");
+        s.cursor = (0, 4); // 'b' of bar
+        s.anchor = Some((2, 2)); // 's' of last
+        assert_eq!(s.selected_text().as_deref(), Some("bar\nbaz qux\nlas"));
+    }
+
+    #[test]
+    fn selected_text_strips_styles() {
+        // The conversion contract: selected_text returns plain text, no
+        // style bytes. A styled fixture must yield the same selected_text
+        // as its plain-text equivalent.
+        let mut plain = state_from_text("foo bar.baz");
+        let mut styled = state_from_text("\x1b[31mfoo\x1b[0m \x1b[1;32mbar.baz\x1b[0m");
+        plain.cursor = (0, 0);
+        plain.anchor = Some((0, 6));
+        styled.cursor = (0, 0);
+        styled.anchor = Some((0, 6));
+        assert_eq!(plain.selected_text(), styled.selected_text());
+        assert_eq!(styled.selected_text().as_deref(), Some("foo bar"));
+    }
+
+    #[test]
+    fn selection_extends_with_cursor_move() {
+        // While anchor is set, moving the cursor extends the selection.
+        let mut s = state_from_text("hello world");
+        s.cursor = (0, 0);
+        s.anchor = Some((0, 0));
+        s.move_right(); // cursor now at 1
+        assert_eq!(s.selection_range(), Some(((0, 0), (0, 1))));
+        s.motion_w(false); // cursor jumps to 'w' of world at col 6
+        assert_eq!(s.selection_range(), Some(((0, 0), (0, 6))));
     }
 }
