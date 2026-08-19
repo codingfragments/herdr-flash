@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 ansi-to-tui = "8.0.1"
+arboard = "3.6.1"
 crossterm = "0.29"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
