@@ -6,6 +6,7 @@
 //! driving a `crossterm` backend directly, and runs an event loop until
 //! `Esc` closes the popup.
 
+mod flash;
 mod render;
 mod socket_client;
 
@@ -176,7 +177,21 @@ fn styled_lines_to_plain_text(lines: &[Vec<StyledChar>]) -> String {
 #[derive(Debug, Clone)]
 enum Mode {
     Normal,
-    // Jump, LineJump, Search, Confirm arrive in Phases 5–8.
+    /// Word-jump: user types a prefix, labels appear on visible matches.
+    /// `labels` = (line, jump_col, label_col, label_char), sorted by distance
+    /// from cursor. `jump_col` is the match start; `label_col` is where the
+    /// label glyph is rendered (last char of the prefix, clamped to the
+    /// last real character so EOL matches don't render past the line end).
+    /// `partial_matches` = (line, jump_col, label_col) for matches when
+    /// there are too many to label (partial-highlight fallback, no labels).
+    /// `start_selection` = true when entered via `S` (plant anchor on jump).
+    Jump {
+        typed: String,
+        labels: Vec<flash::JumpLabel>,
+        partial_matches: Vec<flash::PartialMatch>,
+        start_selection: bool,
+    },
+    // LineJump, Search, Confirm arrive in Phases 6–8.
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -506,6 +521,81 @@ impl State {
         Some((lines, chars))
     }
 
+    // ── Word-jump (Phase 5) ───────────────────────────────────────────────────
+
+    /// Jump the cursor to `(line, col)` and recenter the viewport.
+    fn jump_to(&mut self, line: usize, col: usize) {
+        self.cursor = (line, col);
+        self.recenter_scroll();
+    }
+
+    /// Recompute labels for the current typed prefix and update `mode`.
+    fn recompute_jump(&mut self, typed: String, start_selection: bool) {
+        let (labels, partial_matches) = flash::compute_jump_labels(
+            &self.lines,
+            self.scroll_y,
+            self.content_rows,
+            self.cursor,
+            &typed,
+        );
+        self.mode = Mode::Jump {
+            typed,
+            labels,
+            partial_matches,
+            start_selection,
+        };
+    }
+
+    /// Handle a key while in `Mode::Jump`. Returns `true` if the popup
+    /// should stay open (always — jump never closes the popup).
+    fn handle_key_jump(
+        &mut self,
+        key: &crossterm::event::KeyEvent,
+        typed: String,
+        labels: Vec<flash::JumpLabel>,
+        start_selection: bool,
+    ) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Backspace => {
+                let mut t = typed;
+                t.pop();
+                self.recompute_jump(t, start_selection);
+            }
+            KeyCode::Char(c) => {
+                // If labels are showing and c matches a label → jump.
+                if !labels.is_empty() {
+                    if let Some(&(line, jump_col, _, _)) =
+                        labels.iter().find(|&&(_, _, _, lc)| lc == c)
+                    {
+                        self.jump_to(line, jump_col);
+                        if start_selection {
+                            self.anchor = Some(self.cursor);
+                        }
+                        self.mode = Mode::Normal;
+                        return true;
+                    }
+                }
+                // Otherwise append to the search string and recompute.
+                // Accept printable chars with no modifiers or Shift-only
+                // (crossterm delivers uppercase when Shift is held).
+                let only_shift = key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT);
+                if !c.is_control() && (key.modifiers.is_empty() || only_shift) {
+                    let mut t = typed;
+                    t.push(c);
+                    self.recompute_jump(t, start_selection);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn scroll_cursor_into_view(&mut self) {
         if self.cursor.0 < self.scroll_y {
             self.scroll_y = self.cursor.0;
@@ -609,6 +699,23 @@ impl State {
         // (relative to scroll_x).
         let sel = self.selection_range();
 
+        // Jump overlay data (Phase 5): extract from Mode::Jump once for
+        // the viewport. Per-line labels/partials are filtered inside the
+        // map and shifted to display space.
+        let (jump_typed_len, jump_all_labels, jump_all_partials) = match &self.mode {
+            Mode::Jump {
+                typed,
+                labels,
+                partial_matches,
+                start_selection: _,
+            } => (
+                typed.chars().count(),
+                labels.clone(),
+                partial_matches.clone(),
+            ),
+            _ => (0, Vec::new(), Vec::new()),
+        };
+
         let content_lines: Vec<Line<'static>> = visible
             .iter()
             .enumerate()
@@ -679,6 +786,38 @@ impl State {
                         }
                     });
 
+                // Jump overlay for this line: filter labels and partials
+                // to those on `abs`, shift label_col to display space.
+                let line_labels: Vec<(usize, char)> = jump_all_labels
+                    .iter()
+                    .filter(|&&(l, _, _, _)| l == abs)
+                    .filter_map(|&(_, _, label_col, lc)| {
+                        let disp = label_col.saturating_sub(scroll_x);
+                        if disp < visible_w {
+                            Some((disp, lc))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let line_partials: Vec<usize> = jump_all_partials
+                    .iter()
+                    .filter(|&&(l, _, _)| l == abs)
+                    .filter_map(|&(_, _, label_col)| {
+                        let disp = label_col.saturating_sub(scroll_x);
+                        if disp < visible_w {
+                            Some(disp)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let jump = render::JumpOverlay {
+                    labels: &line_labels,
+                    partial_cols: &line_partials,
+                    typed_len: jump_typed_len,
+                };
+
                 let mut spans = vec![gutter];
                 if has_left_overflow {
                     spans.push(Span::styled(
@@ -690,6 +829,7 @@ impl State {
                     &cells,
                     cur_col,
                     sel_disp,
+                    jump,
                     &self.theme,
                 ));
                 if has_right_overflow {
@@ -736,26 +876,65 @@ impl State {
         }
         let line1 = Line::from(line1_spans);
 
-        // Key-hint line (Phase 4: basic nav + Space + motions).
-        let mut line2_spans = vec![
-            Span::raw(" "),
-            Span::styled("↑↓←→", bold),
-            Span::raw(":move  "),
-            Span::styled("w/W/b/B/e/E", bold),
-            Span::raw(":word  "),
-            Span::styled("Space", bold),
-            Span::raw(":select  "),
-            Span::styled("Esc", bold),
-            Span::raw(":close"),
-        ];
-        if let Some(msg) = &self.message {
-            line2_spans.push(Span::raw("    "));
-            line2_spans.push(Span::styled(
-                msg.clone(),
-                Style::default().fg(self.theme.sel_indicator),
-            ));
-        }
-        let line2 = Line::from(line2_spans);
+        // Key-hint line: in Jump mode, show the jump state; otherwise the
+        // Normal-mode keymap.
+        let line2 = if let Mode::Jump {
+            typed,
+            labels,
+            partial_matches,
+            start_selection,
+        } = &self.mode
+        {
+            let prefix = if *start_selection { "[SEL] " } else { "" };
+            let hint = if !partial_matches.is_empty() {
+                format!(
+                    "{}jump: {}  ({} matches, keep typing…)",
+                    prefix,
+                    typed,
+                    partial_matches.len()
+                )
+            } else if labels.is_empty() && !typed.is_empty() {
+                format!("{}jump: {}  (no matches)", prefix, typed)
+            } else if labels.is_empty() {
+                format!("{}jump: type to search…", prefix)
+            } else {
+                format!("{}jump: {}  ({} matches)", prefix, typed, labels.len())
+            };
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    hint,
+                    Style::default()
+                        .fg(self.theme.jump_label_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled("Esc", bold),
+                Span::raw(":cancel"),
+            ])
+        } else {
+            let mut line2_spans = vec![
+                Span::raw(" "),
+                Span::styled("↑↓←→", bold),
+                Span::raw(":move  "),
+                Span::styled("w/W/b/B/e/E", bold),
+                Span::raw(":word  "),
+                Span::styled("s/S", bold),
+                Span::raw(":jump  "),
+                Span::styled("Space", bold),
+                Span::raw(":select  "),
+                Span::styled("Esc", bold),
+                Span::raw(":close"),
+            ];
+            if let Some(msg) = &self.message {
+                line2_spans.push(Span::raw("    "));
+                line2_spans.push(Span::styled(
+                    msg.clone(),
+                    Style::default().fg(self.theme.sel_indicator),
+                ));
+            }
+            Line::from(line2_spans)
+        };
 
         Paragraph::new(vec![line1, line2])
             .block(Block::default().borders(Borders::ALL))
@@ -832,11 +1011,26 @@ fn run_loop(
             && !key.modifiers.contains(KeyModifiers::CONTROL)
             && !key.modifiers.contains(KeyModifiers::ALT);
 
+        // ── Mode dispatch (Phase 5+) ────────────────────────────────────
+        // When in a mode (Jump/LineJump/Search/Confirm), keys go to the
+        // mode handler, not the Normal-mode keymap. Esc is handled inside
+        // each mode handler (it cancels the mode without touching the
+        // anchor, per the original).
+        if let Mode::Jump {
+            ref typed,
+            ref labels,
+            partial_matches: _,
+            start_selection,
+        } = state.mode
+        {
+            state.handle_key_jump(&key, typed.clone(), labels.clone(), start_selection);
+            continue;
+        }
+
         match key.code {
-            // Esc cancel chain (Phase 4): in a mode → cancel mode (no
-            // modes yet, so this is a no-op for now); else if anchor set →
-            // clear anchor; else → close the popup. Later phases insert the
-            // mode-cancel branch ahead of the anchor check.
+            // Esc cancel chain (Phase 4/5): in a mode → cancel mode (handled
+            // above before reaching here); else if anchor set → clear anchor;
+            // else → close the popup.
             KeyCode::Esc => {
                 if state.anchor.is_some() {
                     state.anchor = None;
@@ -886,6 +1080,15 @@ fn run_loop(
                 } else {
                     state.anchor = Some(state.cursor);
                 }
+            }
+            // ── Word-jump (Phase 5) ──────────────────────────────────────
+            // `s` enters Jump mode; `S` (and `Shift-s`) enters select-jump
+            // (plants the anchor at the destination on completion).
+            KeyCode::Char('s') => {
+                state.recompute_jump(String::new(), false);
+            }
+            KeyCode::Char('S') => {
+                state.recompute_jump(String::new(), true);
             }
             _ => {}
         }
