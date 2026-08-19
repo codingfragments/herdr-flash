@@ -125,38 +125,46 @@ pub fn sel_range_for_line(
 
 /// Build ratatui spans for one line of content.
 ///
+/// Spike (`spike/ansi-color`): cells now carry a base `Style` parsed from
+/// ANSI SGR escapes. The overlay policy is **replace**: the cursor cell
+/// (and, in later phases, selection / jump-label / search cells) fully
+/// overrides the base ANSI style on the cells it touches — it does not
+/// merge. This keeps the overlay predictable and matches how the plain-
+/// text original looked.
+///
 /// Phase 2 priority per character cell (highest wins):
-///   1. Cursor cell → cursor style (inverted)
-///   2. Normal text
+///   1. Cursor cell → cursor style (inverted), replacing base ANSI style
+///   2. Base ANSI style from the parsed cell
 ///
-/// Later phases add jump labels, search highlights, and selection styling
-/// on top of this — the signature is kept extensible for that.
+/// Later phases add jump labels, search highlights, and selection
+/// styling on top of this — same replace policy.
 ///
-/// `chars`: the visible slice of the line (after horizontal scroll).
+/// `cells`: the visible slice of the line (after horizontal scroll),
+/// each carrying its base style.
 /// `cursor_col`: display-column index of the cursor on this line, or None.
 pub fn build_line_spans(
-    chars: &[char],
+    cells: &[crate::StyledChar],
     cursor_col: Option<usize>,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let cursor_style = Style::default().bg(theme.cursor_bg).fg(theme.cursor_fg);
 
-    let mut cells: Vec<(char, Style)> = chars
+    let mut styled: Vec<(char, Style)> = cells
         .iter()
         .enumerate()
-        .map(|(i, &ch)| {
+        .map(|(i, cell)| {
             if cursor_col == Some(i) {
-                (ch, cursor_style)
+                (cell.ch, cursor_style) // overlay replaces base
             } else {
-                (ch, Style::default())
+                (cell.ch, cell.style)
             }
         })
         .collect();
 
     // Cursor or selection past end of line: render a blank cursor cell.
-    let past_end = cursor_col.map(|c| c >= chars.len()).unwrap_or(false);
+    let past_end = cursor_col.map(|c| c >= cells.len()).unwrap_or(false);
     if past_end {
-        cells.push((' ', cursor_style));
+        styled.push((' ', cursor_style));
     }
 
     // Merge consecutive cells with the same style into spans.
@@ -164,7 +172,7 @@ pub fn build_line_spans(
     let mut run = String::new();
     let mut run_style = Style::default();
 
-    for (ch, style) in cells {
+    for (ch, style) in styled {
         if style != run_style {
             if !run.is_empty() {
                 spans.push(Span::styled(run.clone(), run_style));

@@ -55,10 +55,19 @@ fn launch_context() -> Result<LaunchContext, String> {
 
 /// Read the source pane's scrollback via `pane.read` with
 /// `source = "recent_unwrapped"`.
+///
+/// Spike (`spike/ansi-color`): requests `format = "ansi"` +
+/// `strip_ansi = false` so the response carries raw SGR escapes, which
+/// we then parse into per-char ratatui `Style` cells. The plain-text
+/// parity path is `format = "text"` + `strip_ansi = true` (the API
+/// default); this spike deviates to learn whether color reproduction is
+/// viable on top of the overlay model.
 fn read_scrollback(socket_path: &str, pane_id: &str) -> Result<String, String> {
     let params = serde_json::json!({
         "pane_id": pane_id,
         "source": "recent_unwrapped",
+        "format": "ansi",
+        "strip_ansi": false,
     });
     let result = socket_client::request(socket_path, "pane.read", params)
         .map_err(|e| format!("pane.read failed: {e}"))?;
@@ -68,6 +77,57 @@ fn read_scrollback(socket_path: &str, pane_id: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .ok_or_else(|| "pane.read response had no \"read.text\" field".to_string())
+}
+
+// ── ANSI → styled cells (spike) ───────────────────────────────────────────────
+
+/// One character cell carrying its base style parsed from ANSI SGR.
+/// Later overlays (cursor, selection, jump labels) *replace* this base
+/// style on the cells they touch — the spike's overlay policy.
+#[derive(Clone, Copy, Debug)]
+pub struct StyledChar {
+    pub ch: char,
+    pub style: Style,
+}
+
+/// Parse ANSI-styled text into one `Vec<StyledChar>` per line.
+///
+/// `ansi-to-tui`'s `IntoText` parses the whole block in one pass so SGR
+/// state carries across line boundaries correctly; we then flatten each
+/// resulting `Line`'s spans into per-char `(char, Style)` cells. On any
+/// parse failure we fall back to plain unstyled chars so the view never
+/// breaks — the spike is about whether color looks right, not whether
+/// the parser is bulletproof.
+fn parse_ansi_lines(text: &str) -> Vec<Vec<StyledChar>> {
+    use ansi_to_tui::IntoText as _;
+    match text.into_text() {
+        Ok(t) => t
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .flat_map(|span| {
+                        span.content.chars().map(move |ch| StyledChar {
+                            ch,
+                            style: span.style,
+                        })
+                    })
+                    .collect::<Vec<StyledChar>>()
+            })
+            .collect(),
+        Err(_) => text
+            .lines()
+            .map(|l| {
+                l.chars()
+                    .map(|ch| StyledChar {
+                        ch,
+                        style: Style::default(),
+                    })
+                    .collect()
+            })
+            .collect(),
+    }
 }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
@@ -81,7 +141,7 @@ enum Mode {
 // ── State ────────────────────────────────────────────────────────────────────
 
 struct State {
-    lines: Vec<String>,
+    lines: Vec<Vec<StyledChar>>,
     cursor: (usize, usize),
     /// Preferred column for vertical movement (vim-style): moving up/down
     /// clamps the cursor to the line length but remembers this value,
@@ -119,7 +179,7 @@ impl State {
     // ── Cursor movement ───────────────────────────────────────────────────────
 
     fn line_len(&self, line: usize) -> usize {
-        self.lines.get(line).map(|l| l.chars().count()).unwrap_or(0)
+        self.lines.get(line).map(|l| l.len()).unwrap_or(0)
     }
 
     fn move_up(&mut self) {
@@ -296,7 +356,7 @@ impl State {
                 let gutter = Span::styled(gutter_str, gutter_style);
 
                 let scroll_x = self.scroll_x;
-                let logical_len = text.chars().count();
+                let logical_len = text.len();
                 let has_right_overflow = logical_len > scroll_x + avail_w;
                 let has_left_overflow = scroll_x > 0;
 
@@ -305,7 +365,12 @@ impl State {
                 } else {
                     avail_w
                 };
-                let chars: Vec<char> = text.chars().skip(scroll_x).take(visible_w).collect();
+                let cells: Vec<StyledChar> = text
+                    .iter()
+                    .copied()
+                    .skip(scroll_x)
+                    .take(visible_w)
+                    .collect();
 
                 let cur_col = if is_cursor_line {
                     Some(cursor_col.saturating_sub(scroll_x))
@@ -320,7 +385,7 @@ impl State {
                         Style::default().fg(self.theme.footer_dim),
                     ));
                 }
-                spans.extend(render::build_line_spans(&chars, cur_col, &self.theme));
+                spans.extend(render::build_line_spans(&cells, cur_col, &self.theme));
                 if has_right_overflow {
                     spans.push(Span::styled(
                         "…",
@@ -448,7 +513,7 @@ fn run_loop(
                 let max_x = state
                     .lines
                     .iter()
-                    .map(|l| l.chars().count())
+                    .map(|l| l.len())
                     .max()
                     .unwrap_or(0)
                     .saturating_sub(state.avail_w().saturating_sub(1));
@@ -472,11 +537,11 @@ fn main() {
         let text = read_scrollback(&socket_path, &ctx.focused_pane_id)?;
 
         let mut state = State {
-            lines: text.lines().map(String::from).collect(),
+            lines: parse_ansi_lines(&text),
             ..State::default()
         };
         if state.lines.is_empty() {
-            state.lines.push(String::new());
+            state.lines.push(Vec::new());
         }
 
         // Start at the bottom of the captured text, matching the original.
@@ -492,5 +557,82 @@ fn main() {
         run(&mut state).map_err(|e| format!("terminal error: {e}"))
     })() {
         eprintln!("herdr-flash error: {message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::{Color, Modifier};
+
+    /// Verify the ANSI parser turns SGR escapes into per-char styles.
+    /// This is the core evidence for the spike: if these pass, the pipe
+    /// `pane.read(format=ansi) -> parse_ansi_lines -> styled cells` works
+    /// and the only remaining question is how it looks live.
+    #[test]
+    fn parses_sgr_into_styled_cells() {
+        let ansi = "\x1b[31mred\x1b[0m normal \x1b[32;1mbold green\x1b[0m";
+        let lines = parse_ansi_lines(ansi);
+        assert_eq!(lines.len(), 1);
+        let cells = &lines[0];
+
+        // "red" (3 chars) should be fg Red.
+        for c in &cells[0..3] {
+            assert_eq!(c.style.fg, Some(Color::Red), "red prefix not styled red");
+        }
+        // " normal " (8 chars) should be default/unstyled after the reset.
+        // ansi-to-tui represents `\x1b[0m` as `Some(Color::Reset)` (a
+        // sentinel), not `None` — a real spike finding: the parser emits a
+        // Reset color rather than reverting to unset, so "no base style"
+        // means fg is None *or* Some(Color::Reset).
+        let is_default = |c: &StyledChar| matches!(c.style.fg, None | Some(Color::Reset));
+        for c in &cells[3..11] {
+            assert!(
+                is_default(c),
+                "text after reset should be default, got {:?}",
+                c.style.fg
+            );
+        }
+        // "bold green" (10 chars) should be fg Green + BOLD.
+        for c in &cells[11..] {
+            assert_eq!(
+                c.style.fg,
+                Some(Color::Green),
+                "green suffix not styled green"
+            );
+            assert!(
+                c.style.add_modifier.contains(Modifier::BOLD),
+                "green suffix should be bold"
+            );
+        }
+    }
+
+    /// Multi-line ANSI with state carried across a line boundary (no reset
+    /// before the newline) — the whole-block parse should keep the style.
+    #[test]
+    fn carries_style_across_newline() {
+        let ansi = "\x1b[34mblue line one\nblue line two\x1b[0m";
+        let lines = parse_ansi_lines(ansi);
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            for c in line {
+                assert_eq!(
+                    c.style.fg,
+                    Some(Color::Blue),
+                    "style should carry across newline"
+                );
+            }
+        }
+    }
+
+    /// Plain text (no escapes) parses to unstyled cells, same char count.
+    #[test]
+    fn plain_text_is_unstyled() {
+        let lines = parse_ansi_lines("hello world");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].len(), 11);
+        for c in &lines[0] {
+            assert_eq!(c.style, Style::default());
+        }
     }
 }
