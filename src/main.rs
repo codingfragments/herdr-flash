@@ -6,6 +6,7 @@
 //! driving a `crossterm` backend directly, and runs an event loop until
 //! `Esc` closes the popup.
 
+mod config;
 mod flash;
 mod render;
 mod search;
@@ -70,21 +71,43 @@ fn launch_context() -> Result<LaunchContext, String> {
     Ok(LaunchContext { focused_pane_id })
 }
 
-/// Read the source pane's scrollback via `pane.read` with
-/// `source = "recent_unwrapped"`, requesting `format = "ansi"` +
-/// `strip_ansi = false` so the response carries raw SGR escapes. The
-/// caller parses these into per-char ratatui `Style` cells via
-/// `parse_ansi_lines` — see the "Data model" note in PLANNING.md §11.
-/// (The plain-text parity path would be `format = "text"` +
-/// `strip_ansi = true`, the API default; this plugin adopts ANSI color
-/// as a permanent beyond-parity capability.)
-fn read_scrollback(socket_path: &str, pane_id: &str) -> Result<String, String> {
-    let params = serde_json::json!({
-        "pane_id": pane_id,
-        "source": "recent_unwrapped",
-        "format": "ansi",
-        "strip_ansi": false,
-    });
+/// Read the source pane's scrollback via `pane.read` with the given
+/// `Depth`, requesting `format = "ansi"` + `strip_ansi = false` so the
+/// response carries raw SGR escapes. The caller parses these into
+/// per-char ratatui `Style` cells via `parse_ansi_lines` — see the
+/// "Data model" note in PLANNING.md §11.
+///
+/// Depth mapping (per §5/§12):
+/// - `Depth::Viewport` → `source = "visible"` (just the viewport).
+/// - `Depth::Lines(n)` → `source = "recent_unwrapped"` + `lines = n`.
+/// - `Depth::Unlimited` → `source = "recent_unwrapped"` with no `lines`
+///   cap (grabs everything the terminal has).
+fn read_scrollback(
+    socket_path: &str,
+    pane_id: &str,
+    depth: &config::Depth,
+) -> Result<String, String> {
+    let params = match depth {
+        config::Depth::Viewport => serde_json::json!({
+            "pane_id": pane_id,
+            "source": "visible",
+            "format": "ansi",
+            "strip_ansi": false,
+        }),
+        config::Depth::Lines(n) => serde_json::json!({
+            "pane_id": pane_id,
+            "source": "recent_unwrapped",
+            "lines": n,
+            "format": "ansi",
+            "strip_ansi": false,
+        }),
+        config::Depth::Unlimited => serde_json::json!({
+            "pane_id": pane_id,
+            "source": "recent_unwrapped",
+            "format": "ansi",
+            "strip_ansi": false,
+        }),
+    };
     let result = socket_client::request(socket_path, "pane.read", params)
         .map_err(|e| format!("pane.read failed: {e}"))?;
     result
@@ -243,10 +266,15 @@ struct State {
     theme: Theme,
     mode: Mode,
     message: Option<String>,
-    /// Socket path for `pane.send_text` (insert action, Phase 8).
+    /// Socket path for `pane.send_text` (insert action, Phase 8) and
+    /// `pane.read` (re-grab on profile cycle, Phase 9).
     socket_path: Option<String>,
-    /// Source pane id (from launch context) for `pane.send_text`.
+    /// Source pane id (from launch context) for `pane.send_text` / `pane.read`.
     focused_pane_id: Option<String>,
+    /// Runtime config (Phase 9): profiles, labels, line_labels scheme, theme.
+    config: config::Config,
+    /// Current depth index within the active profile's `depths` list.
+    current_depth: usize,
 }
 
 impl Default for State {
@@ -265,6 +293,8 @@ impl Default for State {
             message: None,
             socket_path: None,
             focused_pane_id: None,
+            config: config::Config::default(),
+            current_depth: 0,
         }
     }
 }
@@ -566,6 +596,7 @@ impl State {
             self.content_rows,
             self.cursor,
             &typed,
+            &self.config.labels,
         );
         self.mode = Mode::Jump {
             typed,
@@ -846,6 +877,64 @@ impl State {
         } else {
             eprintln!("herdr-flash: cannot insert — socket_path or focused_pane_id not set");
         }
+    }
+
+    // ── Profile cycling (Phase 9) ───────────────────────────────────────────
+
+    /// Current depth from the active profile's `depths` list.
+    fn current_depth(&self) -> config::Depth {
+        let profile = &self.config.profiles[self.config.current_profile];
+        profile
+            .depths
+            .get(self.current_depth)
+            .copied()
+            .unwrap_or(config::Depth::Lines(200))
+    }
+
+    /// `g` — cycle to the next depth in the active profile's `depths`
+    /// list and re-grab via `pane.read`. Resets cursor to the bottom,
+    /// clears selection, and resets horizontal scroll.
+    fn cycle_profile(&mut self) {
+        let profile = &self.config.profiles[self.config.current_profile];
+        if profile.depths.len() <= 1 {
+            return;
+        }
+        self.current_depth = (self.current_depth + 1) % profile.depths.len();
+        self.regrab();
+    }
+
+    /// Re-grab scrollback at the current depth and reset view state.
+    fn regrab(&mut self) {
+        let depth = self.current_depth();
+        if let (Some(socket_path), Some(pane_id)) = (&self.socket_path, &self.focused_pane_id) {
+            match read_scrollback(socket_path, pane_id, &depth) {
+                Ok(text) => {
+                    self.lines = parse_ansi_lines(&text);
+                    if self.lines.is_empty() {
+                        self.lines.push(Vec::new());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("herdr-flash: re-grab failed: {e}");
+                    self.message = Some(format!("re-grab failed: {e}"));
+                    return;
+                }
+            }
+        }
+        // Reset view state: cursor to bottom, clear selection, reset scroll.
+        self.anchor = None;
+        self.scroll_x = 0;
+        let last = self.lines.len().saturating_sub(1);
+        self.cursor = (last, 0);
+        self.preferred_col = 0;
+        self.scroll_y = usize::MAX; // clamped on next draw
+        self.message = None;
+    }
+
+    /// Active profile's label for the footer.
+    fn profile_label(&self) -> String {
+        let profile = &self.config.profiles[self.config.current_profile];
+        format!("{} {}", profile.name, self.current_depth().label())
     }
 
     fn scroll_cursor_into_view(&mut self) {
@@ -1164,7 +1253,7 @@ impl State {
         // Status line: profile label, line count, cursor pos, selection info.
         let mut line1_spans = vec![
             Span::raw(" "),
-            Span::styled("[scrollback]", dim),
+            Span::styled(format!("[{}]", self.profile_label()), dim),
             Span::raw("  "),
             Span::styled(format!("{} lines", self.lines.len()), dim),
             Span::raw("  "),
@@ -1309,6 +1398,8 @@ impl State {
                 Span::raw(":copy  "),
                 Span::styled("p", bold),
                 Span::raw(":insert  "),
+                Span::styled("g", bold),
+                Span::raw(":cycle  "),
                 Span::styled("Space", bold),
                 Span::raw(":select  "),
                 Span::styled("Esc", bold),
@@ -1524,6 +1615,8 @@ fn run_loop(
                     state.scroll_y,
                     state.content_rows,
                     state.cursor,
+                    &state.config.labels,
+                    state.config.line_labels_unified,
                 );
                 state.mode = Mode::LineJump {
                     labels,
@@ -1536,6 +1629,8 @@ fn run_loop(
                     state.scroll_y,
                     state.content_rows,
                     state.cursor,
+                    &state.config.labels,
+                    state.config.line_labels_unified,
                 );
                 state.mode = Mode::LineJump {
                     labels,
@@ -1553,6 +1648,12 @@ fn run_loop(
                     current: 0,
                     navigating: false,
                 };
+            }
+            // ── Profile cycling (Phase 9) ────────────────────────────────
+            // `g` cycles to the next depth in the active profile's
+            // `depths` list and re-grabs via `pane.read`.
+            KeyCode::Char('g') => {
+                state.cycle_profile();
             }
             // ── Actions (Phase 8) ──────────────────────────────────────────
             // `Enter` copies the selection to the clipboard and closes;
@@ -1587,12 +1688,25 @@ fn main() {
         let ctx = launch_context()?;
         let socket_path = std::env::var("HERDR_SOCKET_PATH")
             .map_err(|_| "HERDR_SOCKET_PATH is not set".to_string())?;
-        let text = read_scrollback(&socket_path, &ctx.focused_pane_id)?;
+
+        // Load config (Phase 9): profiles, labels, line_labels, theme.
+        // Missing/unset/parse-error → built-in defaults, never crash.
+        let config = config::load();
+
+        // Initial grab at the active profile's first depth.
+        let depth = config.profiles[config.current_profile]
+            .depths
+            .first()
+            .copied()
+            .unwrap_or(config::Depth::Lines(200));
+        let text = read_scrollback(&socket_path, &ctx.focused_pane_id, &depth)?;
 
         let mut state = State {
             lines: parse_ansi_lines(&text),
             socket_path: Some(socket_path),
             focused_pane_id: Some(ctx.focused_pane_id.clone()),
+            config,
+            current_depth: 0,
             ..State::default()
         };
         if state.lines.is_empty() {

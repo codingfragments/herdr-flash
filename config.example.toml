@@ -1,63 +1,78 @@
-# herdr-flash config
+# herdr-flash configuration
 #
-# Copy this file to the path printed by:
-#   herdr plugin config-dir herdr-flash
-# as config.toml. The plugin works with zero config — this file is for
-# overriding the built-in defaults below.
+# Place this file at $HERDR_PLUGIN_CONFIG_DIR/config.toml and edit it.
+# Missing keys fall back to the built-in defaults shown below.
+# A missing or malformed config.toml never crashes the plugin — parse
+# errors are reported on stderr and built-in defaults are used.
+
+# Log level for stderr diagnostics: "error", "warn", "info", "debug", "trace".
+log_level = "info"
+
+# Word-jump label charset (`s` / `S`). Default: a-zA-Z (52 chars).
+# A shorter charset (e.g. home-row "asdfjkl;") reaches the labeled state
+# faster but covers fewer matches before falling back to partial-highlight.
+labels = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+# Line-jump scheme (`l` / `L`):
+#   "directional" (default) — a-z below the cursor, A-Z above.
+#   "unified"                 — split `labels` in half: first half below,
+#                                second half above.
+line_labels = "directional"
+
+# ── Theme (16 color roles, hex #rrggbb) ───────────────────────────────────
+# Defaults are Catppuccin Macchiato. Override any role below.
+
+# Selection (blue bg, base fg).
+color_sel_bg = "#8aadf4"
+color_sel_fg = "#24273a"
+
+# Cursor (inverted: text bg, base fg).
+color_cursor_bg = "#cad3f5"
+color_cursor_fg = "#24273a"
+
+# Gutter: cursor-line marker (yellow), dim line numbers (overlay0).
+color_gutter_mark = "#eed49f"
+color_gutter_dim = "#6e738d"
+
+# Selection indicator (teal) — footer SEL count + gutter cue when anchored.
+color_sel_label = "#8bd5ca"
+
+# Footer: dim text (overlay0), key hints (subtext1).
+color_footer_dim = "#6e738d"
+color_footer_key = "#b8c0e0"
+
+# Word-jump labels (peach bg, base fg), prefix match (red fg), partial (yellow fg).
+color_jump_label_bg = "#f5a97f"
+color_jump_label_fg = "#24273a"
+color_jump_match_fg = "#ed8796"
+color_jump_partial_fg = "#eed49f"
+
+# Search: non-current match (green bg), current match (yellow bg), text (base fg).
+color_search_match_bg = "#a6da95"
+color_search_current_bg = "#eed49f"
+color_search_fg = "#24273a"
+
+# ── Profiles ─────────────────────────────────────────────────────────────
+# Each profile defines a `depths` list that `g` cycles through.
+# Select a profile at launch by setting FLASH_PROFILE=<name> on the
+# manifest action's command (via `herdr plugin pane open --env`).
+# The built-in "default" profile (used when FLASH_PROFILE is unset)
+# carries ["200", "5000", "unlimited", "viewport"] and is always available.
 #
-# Full reference: doc/config-reference.md in the plugin repo.
-# This file is read once per popup launch - no live reload.
-
-# Verbosity of stderr diagnostics. One of: off, error, warn, info, debug.
-# log_level = "info"
-
-# Scrollback depth profiles available to bind to keybinds. The built-in
-# `default` profile (used when FLASH_PROFILE is unset) is below; define your
-# own [profiles.<name>] blocks and bind a key to an action that sets
-# FLASH_PROFILE=<name>. Cycled inside the popup with `g`.
+# Depth values:
+#   "viewport"   — just what's on screen (pane.read source=visible).
+#   "N"          — last N lines of scrollback (recent_unwrapped + lines=N).
+#   "unlimited"   — everything the terminal has in its scrollback buffer
+#                  (recent_unwrapped, no lines cap). Also accepted: "all".
 
 [profiles.default]
-# Comma-separated list of depths. Each entry is "viewport" (visible
-# area only) or a number of scrollback lines. First entry is active on
-# open; `g` cycles forward.
-depths = ["viewport", "200", "2000"]
+depths = ["200", "5000", "unlimited", "viewport"]
 
-# Example: a deep-scrollback keybind. Bind an action that sets
-# FLASH_PROFILE=deep and `g` will cycle this list instead.
-# [profiles.deep]
-# depths = ["2000", "5000"]
+# Example: a quick-glance profile (viewport only, no cycling).
+[profiles.quick]
+depths = ["viewport"]
 
-# Popup dimensions, as WIDTHxHEIGHT. Percentages (of the host pane) or
-# absolute cell counts. Advisory on Herdr — the popup's actual size is
-# set by [[panes]] width/height at manifest time (no live resize).
-# size = "90%x85%"
-
-# Characters used as word-jump (`s`) labels. Any printable non-whitespace
-# chars; duplicates removed; order preserved. Fewer labels means more chars
-# must be typed before labels appear. Global (not per-keybind).
-# labels = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-# Line-jump (`l`) label scheme. "directional" (default): a-z below cursor,
-# A-Z above. "unified": split `labels` in half, first half below, second
-# half above. Global (not per-keybind).
-# line_labels = "directional"
-
-# Theme colors — hex strings ("#rrggbb"). All default to Catppuccin
-# Macchiato. Omit any key to keep the default. See doc/config-reference.md
-# for the full list of 16 roles. Global (not per-keybind).
-# color_sel_bg          = "#8aadf4"   # selection background
-# color_sel_fg          = "#24273a"   # selection foreground
-# color_cursor_bg       = "#cad3f5"   # cursor cell background
-# color_cursor_fg       = "#24273a"   # cursor cell foreground
-# color_gutter_mark     = "#eed49f"   # cursor-row gutter marker
-# color_gutter_dim      = "#6e738d"   # non-cursor gutter numbers
-# color_sel_label       = "#8bd5ca"   # "SEL N lines" footer label
-# color_footer_dim      = "#6e738d"   # footer status text
-# color_footer_key      = "#b8c0e0"   # footer key hint labels
-# color_jump_label_bg   = "#f5a97f"   # jump label background
-# color_jump_label_fg   = "#24273a"   # jump label foreground
-# color_jump_match_fg   = "#ed8796"   # jump matched-prefix highlight
-# color_jump_partial_fg = "#eed49f"   # jump partial-match highlight
-# color_search_match_bg    = "#a6da95"   # non-current search match bg
-# color_search_current_bg  = "#eed49f"   # current search match bg
-# color_search_fg       = "#24273a"   # search match foreground
+# Example: a deep-scrollback profile.
+# Bind a key to an action that sets FLASH_PROFILE=deep to use it.
+[profiles.deep]
+depths = ["2000", "5000", "unlimited"]
