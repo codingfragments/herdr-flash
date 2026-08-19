@@ -133,41 +133,55 @@ pub fn sel_range_for_line(
 /// Build ratatui spans for one line of content.
 ///
 /// Cells carry a base `Style` parsed from ANSI SGR escapes. The overlay
-/// policy is **replace**: the cursor cell (and, in later phases,
-/// selection / jump-label / search cells) fully overrides the base ANSI
-/// style on the cells it touches — it does not merge. This keeps the
-/// overlay predictable and matches how the plain-text original looked.
+/// policy is **replace**: the cursor cell and selection cells fully
+/// override the base ANSI style on the cells they touch — they do not
+/// merge. This keeps the overlay predictable and matches how the plain-
+/// text original looked. Later phases add jump labels and search
+/// highlights on top of this — same replace policy.
 ///
 /// Priority per character cell (highest wins):
 ///   1. Cursor cell → cursor style (inverted), replacing base ANSI style
-///   2. Base ANSI style from the parsed cell
-///
-/// Later phases add jump labels, search highlights, and selection
-/// styling on top of this — same replace policy.
+///   2. Selection cell → selection style (blue bg), replacing base ANSI style
+///   3. Base ANSI style from the parsed cell
 ///
 /// `cells`: the visible slice of the line (after horizontal scroll),
 /// each carrying its base style.
 /// `cursor_col`: display-column index of the cursor on this line, or None.
+/// `sel_range`: optional `(start_col, end_col)` inclusive display-column
+/// range for the selection on this line, or None if this line isn't in
+/// the selection. Coordinates are already in display space (relative to
+/// `cells`, i.e. after horizontal scroll).
 pub fn build_line_spans(
     cells: &[crate::StyledChar],
     cursor_col: Option<usize>,
+    sel_range: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let cursor_style = Style::default().bg(theme.cursor_bg).fg(theme.cursor_fg);
+    let sel_style = Style::default().bg(theme.sel_bg).fg(theme.sel_fg);
 
     let mut styled: Vec<(char, Style)> = cells
         .iter()
         .enumerate()
         .map(|(i, cell)| {
             if cursor_col == Some(i) {
-                (cell.ch, cursor_style) // overlay replaces base
+                (cell.ch, cursor_style) // cursor replaces base
+            } else if let Some((s, e)) = sel_range {
+                if i >= s && i <= e {
+                    (cell.ch, sel_style) // selection replaces base
+                } else {
+                    (cell.ch, cell.style)
+                }
             } else {
                 (cell.ch, cell.style)
             }
         })
         .collect();
 
-    // Cursor or selection past end of line: render a blank cursor cell.
+    // Cursor or selection past end of line: render a blank styled cell.
+    // The cursor wins over selection for the past-end cell (cursor is the
+    // active position); a selection extending past EOL only paints the
+    // real cells, not a virtual one.
     let past_end = cursor_col.map(|c| c >= cells.len()).unwrap_or(false);
     if past_end {
         styled.push((' ', cursor_style));
