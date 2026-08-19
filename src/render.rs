@@ -138,6 +138,17 @@ pub struct JumpOverlay<'a> {
     pub typed_len: usize,
 }
 
+/// Search overlay data for one line, in display space.
+///
+/// `matches` = (display_col, is_current) for search matches on this line.
+/// `query_len` is the length of the search query (for highlighting the
+/// full match span, not just the start col).
+#[derive(Default)]
+pub struct SearchOverlay<'a> {
+    pub matches: &'a [(usize, bool)],
+    pub query_len: usize,
+}
+
 /// Build ratatui spans for one line of content.
 ///
 /// Cells carry a base `Style` parsed from ANSI SGR escapes. The overlay
@@ -153,8 +164,10 @@ pub struct JumpOverlay<'a> {
 ///   3. Partial match → partial style (yellow fg, bold) — all typed chars
 ///      when too many matches to label
 ///   4. Cursor → cursor style (inverted)
-///   5. Selection → selection style (blue bg)
-///   6. Base ANSI style from the parsed cell
+///   5. Current search match → search-current style (yellow bg, bold);
+///      non-current search match → search style (green bg)
+///   6. Selection → selection style (blue bg)
+///   7. Base ANSI style from the parsed cell
 ///
 /// `cells`: the visible slice of the line (after horizontal scroll),
 /// each carrying its base style.
@@ -162,11 +175,13 @@ pub struct JumpOverlay<'a> {
 /// `sel_range`: optional `(start_col, end_col)` inclusive display-column
 /// range for the selection on this line, or None.
 /// `jump`: jump overlay data for this line (empty when not in Jump mode).
+/// `search`: search overlay data for this line (empty when not in Search mode).
 pub fn build_line_spans(
     cells: &[crate::StyledChar],
     cursor_col: Option<usize>,
     sel_range: Option<(usize, usize)>,
     jump: JumpOverlay,
+    search: SearchOverlay,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let cursor_style = Style::default().bg(theme.cursor_bg).fg(theme.cursor_fg);
@@ -180,6 +195,13 @@ pub fn build_line_spans(
         .add_modifier(Modifier::BOLD);
     let partial_style = Style::default()
         .fg(theme.jump_partial_fg)
+        .add_modifier(Modifier::BOLD);
+    let search_style = Style::default()
+        .bg(theme.search_match_bg)
+        .fg(theme.search_fg);
+    let search_cur_style = Style::default()
+        .bg(theme.search_current_bg)
+        .fg(theme.search_fg)
         .add_modifier(Modifier::BOLD);
 
     let mut styled: Vec<(char, Style)> = cells
@@ -212,13 +234,28 @@ pub fn build_line_spans(
             if cursor_col == Some(i) {
                 return (cell.ch, cursor_style);
             }
-            // 5. Selection.
+            // 5. Search match (current > non-current).
+            if search.query_len > 0 {
+                for &(mc, is_cur) in search.matches {
+                    if i >= mc && i < mc + search.query_len {
+                        return (
+                            cell.ch,
+                            if is_cur {
+                                search_cur_style
+                            } else {
+                                search_style
+                            },
+                        );
+                    }
+                }
+            }
+            // 6. Selection.
             if let Some((s, e)) = sel_range {
                 if i >= s && i <= e {
                     return (cell.ch, sel_style);
                 }
             }
-            // 6. Base ANSI style.
+            // 7. Base ANSI style.
             (cell.ch, cell.style)
         })
         .collect();

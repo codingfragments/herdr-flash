@@ -8,6 +8,7 @@
 
 mod flash;
 mod render;
+mod search;
 mod socket_client;
 
 use std::io;
@@ -199,7 +200,17 @@ enum Mode {
         labels: Vec<(usize, char)>,
         start_selection: bool,
     },
-    // Search, Confirm arrive in Phases 7–8.
+    /// Incremental search. `query` is the typed string; `matches` =
+    /// `(line, col)` match starts across all captured lines; `current` is
+    /// the index into `matches` the cursor sits on; `navigating` = false
+    /// while typing the query (input phase), true after Enter (nav phase).
+    Search {
+        query: String,
+        matches: Vec<(usize, usize)>,
+        current: usize,
+        navigating: bool,
+    },
+    // Confirm arrives in Phase 8.
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -636,6 +647,118 @@ impl State {
         true
     }
 
+    // ── Search (Phase 7) ───────────────────────────────────────────────────────
+
+    /// Move the cursor to the current search match and recenter.
+    fn jump_search_cursor(&mut self, matches: &[(usize, usize)], current: usize) {
+        if let Some(&(line, col)) = matches.get(current) {
+            self.cursor = (line, col);
+            self.recenter_scroll();
+        }
+    }
+
+    /// Recompute matches for the current query and update `mode`.
+    fn recompute_search(&mut self, query: String, navigating: bool) {
+        let matches = search::compute_search_matches(&self.lines, &query);
+        let current = search::search_current_from_cursor(&matches, self.cursor);
+        if !navigating {
+            // Input phase: jump cursor to current match live as you type.
+            self.jump_search_cursor(&matches, current);
+        }
+        self.mode = Mode::Search {
+            query,
+            matches,
+            current,
+            navigating,
+        };
+    }
+
+    /// Handle a key while in `Mode::Search`. Returns `true` if the popup
+    /// should stay open (always — search never closes the popup).
+    fn handle_key_search(
+        &mut self,
+        key: &crossterm::event::KeyEvent,
+        mut query: String,
+        matches: Vec<(usize, usize)>,
+        mut current: usize,
+        navigating: bool,
+    ) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let only_shift = key.modifiers.contains(KeyModifiers::SHIFT)
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT);
+
+        if navigating {
+            // Navigation phase: n/N move between matches, anything else exits.
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                    // Exit search and anchor selection at current match start.
+                    self.anchor = Some(self.cursor);
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char('n') if key.modifiers.is_empty() => {
+                    if !matches.is_empty() {
+                        current = (current + 1) % matches.len();
+                        self.jump_search_cursor(&matches, current);
+                    }
+                    self.mode = Mode::Search {
+                        query,
+                        matches,
+                        current,
+                        navigating: true,
+                    };
+                }
+                KeyCode::Char('N') if key.modifiers.is_empty() || only_shift => {
+                    if !matches.is_empty() {
+                        current = (current + matches.len() - 1) % matches.len();
+                        self.jump_search_cursor(&matches, current);
+                    }
+                    self.mode = Mode::Search {
+                        query,
+                        matches,
+                        current,
+                        navigating: true,
+                    };
+                }
+                _ => {
+                    // Any other key exits search, stays at current match.
+                    self.mode = Mode::Normal;
+                }
+            }
+        } else {
+            // Input phase: type freely; Enter confirms, Esc cancels.
+            match key.code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Enter => {
+                    // Commit query — switch to navigation phase.
+                    current = search::search_current_from_cursor(&matches, self.cursor);
+                    self.jump_search_cursor(&matches, current);
+                    self.mode = Mode::Search {
+                        query,
+                        matches,
+                        current,
+                        navigating: true,
+                    };
+                }
+                KeyCode::Backspace => {
+                    query.pop();
+                    self.recompute_search(query, false);
+                }
+                KeyCode::Char(c) if !c.is_control() && (key.modifiers.is_empty() || only_shift) => {
+                    query.push(c);
+                    self.recompute_search(query, false);
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
     fn scroll_cursor_into_view(&mut self) {
         if self.cursor.0 < self.scroll_y {
             self.scroll_y = self.cursor.0;
@@ -768,6 +891,19 @@ impl State {
             .fg(self.theme.jump_label_fg)
             .add_modifier(Modifier::BOLD);
 
+        // Search overlay data (Phase 7): extract from Mode::Search once for
+        // the viewport. Per-line matches are filtered inside the map and
+        // shifted to display space.
+        let (search_all, search_current_idx, search_qlen) = match &self.mode {
+            Mode::Search {
+                matches,
+                current,
+                query,
+                navigating: _,
+            } => (matches.clone(), *current, query.chars().count()),
+            _ => (Vec::new(), 0, 0),
+        };
+
         let content_lines: Vec<Line<'static>> = visible
             .iter()
             .enumerate()
@@ -876,6 +1012,25 @@ impl State {
                     typed_len: jump_typed_len,
                 };
 
+                // Search matches on this line in display coords (col, is_current).
+                let line_search: Vec<(usize, bool)> = search_all
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &(ml, _))| ml == abs)
+                    .filter_map(|(i, &(_, mc))| {
+                        let dc = mc.saturating_sub(scroll_x);
+                        if dc < visible_w {
+                            Some((dc, i == search_current_idx))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let search = render::SearchOverlay {
+                    matches: &line_search,
+                    query_len: search_qlen,
+                };
+
                 let mut spans = vec![gutter];
                 if has_left_overflow {
                     spans.push(Span::styled(
@@ -888,6 +1043,7 @@ impl State {
                     cur_col,
                     sel_disp,
                     jump,
+                    search,
                     &self.theme,
                 ));
                 if has_right_overflow {
@@ -988,6 +1144,55 @@ impl State {
                 Span::styled("Esc", bold),
                 Span::raw(":cancel"),
             ])
+        } else if let Mode::Search {
+            query,
+            matches,
+            current,
+            navigating,
+        } = &self.mode
+        {
+            let count_str = if matches.is_empty() && !query.is_empty() {
+                "  (no matches)".to_string()
+            } else if !matches.is_empty() {
+                format!("  {}/{}", current + 1, matches.len())
+            } else {
+                String::new()
+            };
+            if *navigating {
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("/{query}{count_str}"),
+                        Style::default()
+                            .fg(self.theme.search_current_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::styled("n", bold),
+                    Span::raw(":next  "),
+                    Span::styled("N", bold),
+                    Span::raw(":prev  "),
+                    Span::styled("Space", bold),
+                    Span::raw(":select  "),
+                    Span::styled("Esc", bold),
+                    Span::raw(":done"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("/{query}█{count_str}"),
+                        Style::default()
+                            .fg(self.theme.search_current_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("  "),
+                    Span::styled("Enter", bold),
+                    Span::raw(":confirm  "),
+                    Span::styled("Esc", bold),
+                    Span::raw(":cancel"),
+                ])
+            }
         } else {
             let mut line2_spans = vec![
                 Span::raw(" "),
@@ -999,6 +1204,8 @@ impl State {
                 Span::raw(":jump  "),
                 Span::styled("l/L", bold),
                 Span::raw(":line  "),
+                Span::styled("/", bold),
+                Span::raw(":search  "),
                 Span::styled("Space", bold),
                 Span::raw(":select  "),
                 Span::styled("Esc", bold),
@@ -1112,6 +1319,16 @@ fn run_loop(
             state.handle_key_line_jump(&key, labels.clone(), start_selection);
             continue;
         }
+        if let Mode::Search {
+            ref query,
+            ref matches,
+            current,
+            navigating,
+        } = state.mode
+        {
+            state.handle_key_search(&key, query.clone(), matches.clone(), current, navigating);
+            continue;
+        }
 
         match key.code {
             // Esc cancel chain (Phase 4/5): in a mode → cancel mode (handled
@@ -1201,6 +1418,18 @@ fn run_loop(
                 state.mode = Mode::LineJump {
                     labels,
                     start_selection: true,
+                };
+            }
+            // ── Search (Phase 7) ──────────────────────────────────────────
+            // `/` enters search mode (only when no anchor is set, per
+            // the original). Input phase: type the query, matches highlight
+            // live. Enter → nav phase (n/N, Space-to-anchor).
+            KeyCode::Char('/') if state.anchor.is_none() => {
+                state.mode = Mode::Search {
+                    query: String::new(),
+                    matches: Vec::new(),
+                    current: 0,
+                    navigating: false,
                 };
             }
             _ => {}
