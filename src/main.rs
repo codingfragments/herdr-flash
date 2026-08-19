@@ -10,6 +10,7 @@ mod render;
 mod socket_client;
 
 use std::io;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -23,6 +24,20 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
 
 use render::Theme;
+
+/// Debounce window for identical consecutive key events.
+///
+/// Herdr's popup PTY runs in legacy keyboard mode, where crossterm can't
+/// distinguish a genuine press from an OS key-repeat or a flaky
+/// double-delivery — every key event arrives as `KeyEventKind::Press`.
+/// A single tap can therefore produce two `Press` events and fire the
+/// bound action twice (visible as the cursor moving to its first stop,
+/// then jumping again). We skip an identical key+modifiers event that
+/// arrives within this window of the previous one. Different keys always
+/// pass; legitimate rapid distinct-key input is unaffected. Tuned to
+/// catch near-instant duplicate delivery without eating deliberate
+/// fast double-taps (a human double-tap is ~100ms+ apart).
+const KEY_DEBOUNCE: Duration = Duration::from_millis(40);
 
 // ── Launch context ────────────────────────────────────────────────────────────
 
@@ -646,6 +661,9 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut State,
 ) -> io::Result<()> {
+    // Last key event processed, for same-key debounce (see KEY_DEBOUNCE).
+    let mut last_key: Option<(KeyCode, KeyModifiers, Instant)> = None;
+
     loop {
         // Update geometry + clamp scroll_y BEFORE drawing so the first
         // frame is correct (otherwise the first draw uses the stale
@@ -662,6 +680,20 @@ fn run_loop(
             continue;
         };
         if key.kind != KeyEventKind::Press {
+            continue;
+        }
+
+        // Same-key debounce: skip an identical key+modifiers event
+        // arriving within KEY_DEBOUNCE of the previous one. This absorbs
+        // flaky double-delivery and the first OS key-repeat tick in
+        // legacy keyboard mode, where repeats are indistinguishable from
+        // presses. Different keys always pass.
+        let now = Instant::now();
+        let is_duplicate = last_key.is_some_and(|(code, mods, when)| {
+            code == key.code && mods == key.modifiers && now.duration_since(when) < KEY_DEBOUNCE
+        });
+        last_key = Some((key.code, key.modifiers, now));
+        if is_duplicate {
             continue;
         }
 
