@@ -83,6 +83,11 @@ enum Mode {
 struct State {
     lines: Vec<String>,
     cursor: (usize, usize),
+    /// Preferred column for vertical movement (vim-style): moving up/down
+    /// clamps the cursor to the line length but remembers this value,
+    /// snapping back to it when a later line is long enough. Horizontal
+    /// moves update it; vertical moves don't.
+    preferred_col: usize,
     scroll_y: usize,
     scroll_x: usize,
     content_rows: usize,
@@ -98,6 +103,7 @@ impl Default for State {
         Self {
             lines: Vec::new(),
             cursor: (0, 0),
+            preferred_col: 0,
             scroll_y: 0,
             scroll_x: 0,
             content_rows: 24,
@@ -121,7 +127,7 @@ impl State {
             return;
         }
         self.cursor.0 -= 1;
-        self.cursor.1 = self.cursor.1.min(self.line_len(self.cursor.0));
+        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
         self.scroll_cursor_into_view();
     }
 
@@ -130,17 +136,19 @@ impl State {
             return;
         }
         self.cursor.0 += 1;
-        self.cursor.1 = self.cursor.1.min(self.line_len(self.cursor.0));
+        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
         self.scroll_cursor_into_view();
     }
 
     fn move_left(&mut self) {
         if self.cursor.1 > 0 {
             self.cursor.1 -= 1;
+            self.preferred_col = self.cursor.1;
             self.scroll_x_into_view();
         } else if self.cursor.0 > 0 {
             self.cursor.0 -= 1;
             self.cursor.1 = self.line_len(self.cursor.0);
+            self.preferred_col = self.cursor.1;
             self.scroll_cursor_into_view();
         }
     }
@@ -149,10 +157,12 @@ impl State {
         let len = self.line_len(self.cursor.0);
         if self.cursor.1 < len {
             self.cursor.1 += 1;
+            self.preferred_col = self.cursor.1;
             self.scroll_x_into_view();
         } else if self.cursor.0 + 1 < self.lines.len() {
             self.cursor.0 += 1;
             self.cursor.1 = 0;
+            self.preferred_col = 0;
             self.scroll_cursor_into_view();
         }
     }
@@ -160,7 +170,7 @@ impl State {
     fn page_up(&mut self) {
         let half = (self.content_rows / 2).max(1);
         self.cursor.0 = self.cursor.0.saturating_sub(half);
-        self.cursor.1 = self.cursor.1.min(self.line_len(self.cursor.0));
+        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
         self.recenter_scroll();
     }
 
@@ -168,7 +178,7 @@ impl State {
         let half = (self.content_rows / 2).max(1);
         let last = self.lines.len().saturating_sub(1);
         self.cursor.0 = (self.cursor.0 + half).min(last);
-        self.cursor.1 = self.cursor.1.min(self.line_len(self.cursor.0));
+        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
         self.recenter_scroll();
     }
 
@@ -476,6 +486,7 @@ fn main() {
         // isn't known until the first run_loop iteration.
         let last = state.lines.len().saturating_sub(1);
         state.cursor = (last, 0);
+        state.preferred_col = 0;
         state.scroll_y = usize::MAX;
 
         run(&mut state).map_err(|e| format!("terminal error: {e}"))
