@@ -402,18 +402,16 @@ fn run_loop(
     state: &mut State,
 ) -> io::Result<()> {
     loop {
-        terminal.draw(|f| state.render_all(f.area(), f.buffer_mut()))?;
-        // Content area = full height minus the 4-row footer
-        // (Constraint::Length(4) in render_all). The scroll math uses
-        // content_rows, so it must match the actual render area — not the
-        // full terminal height — or the cursor ends up below the visible
-        // content at the buffer end.
+        // Update geometry + clamp scroll_y BEFORE drawing so the first
+        // frame is correct (otherwise the first draw uses the stale
+        // default content_rows=24, putting the cursor mid-screen, then
+        // the clamp on the next iteration causes a visible jump).
         state.content_rows = terminal.size()?.height.saturating_sub(4) as usize;
         state.content_cols = terminal.size()?.width as usize;
-
-        // Clamp scroll_y now that we have the real viewport height.
         let max_scroll = state.lines.len().saturating_sub(state.content_rows);
         state.scroll_y = state.scroll_y.min(max_scroll);
+
+        terminal.draw(|f| state.render_all(f.area(), f.buffer_mut()))?;
 
         let CtEvent::Key(key) = event::read()? else {
             continue;
@@ -472,9 +470,13 @@ fn main() {
         }
 
         // Start at the bottom of the captured text, matching the original.
+        // scroll_y = MAX so the first run_loop clamp brings it to max_scroll
+        // (last line at the bottom row — the lowest scroll position). We
+        // can't compute max_scroll here because the real terminal height
+        // isn't known until the first run_loop iteration.
         let last = state.lines.len().saturating_sub(1);
         state.cursor = (last, 0);
-        state.scroll_y = last.saturating_sub(state.content_rows.saturating_sub(1));
+        state.scroll_y = usize::MAX;
 
         run(&mut state).map_err(|e| format!("terminal error: {e}"))
     })() {
