@@ -55,6 +55,7 @@ pub fn compute_jump_labels(
     content_rows: usize,
     cursor: (usize, usize),
     typed: &str,
+    label_chars: &[char],
 ) -> (Vec<JumpLabel>, Vec<PartialMatch>) {
     if typed.is_empty() {
         return (Vec::new(), Vec::new());
@@ -139,7 +140,7 @@ pub fn compute_jump_labels(
         .keys()
         .flat_map(|&c| [c.to_ascii_lowercase(), c.to_ascii_uppercase()])
         .collect();
-    let pool: Vec<char> = LABEL_CHARS
+    let pool: Vec<char> = label_chars
         .iter()
         .filter(|&&c| !exclude.contains(&c) && !all_continuations.contains(&c))
         .copied()
@@ -154,11 +155,11 @@ pub fn compute_jump_labels(
         let pre = cont.and_then(|c| {
             if *continuation_counts.get(&c).unwrap_or(&0) == 1 {
                 // Prefer lowercase label; fall back to uppercase.
-                if LABEL_CHARS.contains(&c) && !exclude.contains(&c) {
+                if label_chars.contains(&c) && !exclude.contains(&c) {
                     Some(c)
                 } else {
                     let cu = c.to_ascii_uppercase();
-                    if LABEL_CHARS.contains(&cu) && !exclude.contains(&cu) {
+                    if label_chars.contains(&cu) && !exclude.contains(&cu) {
                         Some(cu)
                     } else {
                         None
@@ -214,6 +215,8 @@ pub fn compute_line_labels(
     scroll_y: usize,
     content_rows: usize,
     cursor: (usize, usize),
+    label_chars: &[char],
+    unified: bool,
 ) -> Vec<(usize, char)> {
     let vis_start = scroll_y;
     let vis_end = (scroll_y + content_rows).min(lines.len());
@@ -224,12 +227,26 @@ pub fn compute_line_labels(
 
     let mut labels: Vec<(usize, char)> = Vec::new();
 
-    // Directional scheme: a-z below (nearest = a), A-Z above (nearest = A).
-    for (line, lc) in below.zip('a'..='z') {
-        labels.push((line, lc));
-    }
-    for (line, lc) in above.zip('A'..='Z') {
-        labels.push((line, lc));
+    if unified {
+        // Split label_chars in half: first half → below, second half → above.
+        let n = label_chars.len();
+        let mid = n.div_ceil(2); // first half gets the extra char if odd
+        let below_pool = &label_chars[..mid];
+        let above_pool = &label_chars[mid..];
+        for (line, &lc) in below.zip(below_pool.iter()) {
+            labels.push((line, lc));
+        }
+        for (line, &lc) in above.zip(above_pool.iter()) {
+            labels.push((line, lc));
+        }
+    } else {
+        // Directional scheme: a-z below (nearest = a), A-Z above (nearest = A).
+        for (line, lc) in below.zip('a'..='z') {
+            labels.push((line, lc));
+        }
+        for (line, lc) in above.zip('A'..='Z') {
+            labels.push((line, lc));
+        }
     }
     labels
 }
@@ -256,7 +273,7 @@ mod tests {
     #[test]
     fn empty_prefix_yields_nothing() {
         let lines = styled_lines("foo bar baz");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "", LABEL_CHARS);
         assert!(labels.is_empty());
         assert!(partials.is_empty());
     }
@@ -266,7 +283,7 @@ mod tests {
     fn few_matches_get_labeled() {
         // "foo bar baz" — matches for "ba" at cols 4 and 8.
         let lines = styled_lines("foo bar baz");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ba");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ba", LABEL_CHARS);
         assert!(partials.is_empty(), "should not be partial");
         assert_eq!(labels.len(), 2, "two matches should get labels");
         // Nearest to cursor (0,0) is col 4 (bar), then col 8 (baz).
@@ -282,7 +299,7 @@ mod tests {
         // 60 matches for "x" — exceeds the 52-char pool.
         let line = styled_line(&"x ".repeat(60));
         let lines = vec![line];
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "x");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "x", LABEL_CHARS);
         assert!(labels.is_empty(), "too many matches → no labels");
         assert_eq!(partials.len(), 60, "all matches in partial");
     }
@@ -293,7 +310,7 @@ mod tests {
         // "aba" — matches for "a" at cols 0 and 2. 'a' is typed, so it
         // can't be a label. The labels should be non-'a' pool chars.
         let lines = styled_lines("aba");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "a");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "a", LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2);
         for &(_, _, _, lc) in &labels {
@@ -307,7 +324,7 @@ mod tests {
     fn trailing_space_matches_at_eol() {
         // "foo" at end of line — "foo " (with trailing space) should match.
         let lines = styled_lines("x foo");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "foo ");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "foo ", LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(
             labels.len(),
@@ -321,7 +338,7 @@ mod tests {
     #[test]
     fn case_insensitive_matching() {
         let lines = styled_lines("Foo BAR baz");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ba");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ba", LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2, "BAR and baz both match 'ba'");
         // BAR at col 4, baz at col 8.
@@ -335,7 +352,7 @@ mod tests {
     fn only_visible_lines_matched() {
         let lines = styled_lines("foo\nbar\nbaz");
         // scroll_y=1, content_rows=1 → only line 1 ("bar") is visible.
-        let (labels, partials) = compute_jump_labels(&lines, 1, 1, (1, 0), "ba");
+        let (labels, partials) = compute_jump_labels(&lines, 1, 1, (1, 0), "ba", LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 1, "only the visible line matches");
         assert_eq!(labels[0].0, 1, "match is on visible line 1");
@@ -348,7 +365,7 @@ mod tests {
         // Continuations: 'c' (col 2, unique) and 'd' (col 6, unique).
         // Each should be pre-assigned as its own label.
         let lines = styled_lines("abc abd");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ab");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ab", LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2);
         let label_chars: Vec<char> = labels.iter().map(|&(_, _, _, lc)| lc).collect();
@@ -369,7 +386,7 @@ mod tests {
         // Continuation is 'x' for both (ambiguous, count=2) → 'x' excluded
         // from the pool. Labels must be non-'x' pool chars.
         let lines = styled_lines("abx abx");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ab");
+        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ab", LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2);
         for &(_, _, _, lc) in &labels {
@@ -384,7 +401,7 @@ mod tests {
     fn line_jump_labels_all_visible_except_cursor() {
         // 5 lines, cursor on line 2. Lines 0,1 above; lines 3,4 below.
         let lines = styled_lines("a\nb\nc\nd\ne");
-        let labels = compute_line_labels(&lines, 0, 10, (2, 0));
+        let labels = compute_line_labels(&lines, 0, 10, (2, 0), LABEL_CHARS, false);
         // 4 labels (all except cursor line 2).
         assert_eq!(labels.len(), 4);
         // Below: lines 3,4 → a,b
@@ -401,7 +418,7 @@ mod tests {
     fn line_jump_cursor_at_top() {
         // Cursor on line 0 → all labels are below (a-z).
         let lines = styled_lines("a\nb\nc");
-        let labels = compute_line_labels(&lines, 0, 10, (0, 0));
+        let labels = compute_line_labels(&lines, 0, 10, (0, 0), LABEL_CHARS, false);
         assert_eq!(labels.len(), 2);
         assert_eq!(labels[0], (1, 'a'));
         assert_eq!(labels[1], (2, 'b'));
@@ -411,7 +428,7 @@ mod tests {
     fn line_jump_cursor_at_bottom() {
         // Cursor on last line → all labels are above (A-Z).
         let lines = styled_lines("a\nb\nc");
-        let labels = compute_line_labels(&lines, 0, 10, (2, 0));
+        let labels = compute_line_labels(&lines, 0, 10, (2, 0), LABEL_CHARS, false);
         assert_eq!(labels.len(), 2);
         // Above reversed: line 1 = A, line 0 = B
         assert_eq!(labels[0], (1, 'A'));
@@ -422,7 +439,7 @@ mod tests {
     fn line_jump_respects_scroll_window() {
         // 5 lines, scroll_y=1, content_rows=2 → only lines 1,2 visible.
         let lines = styled_lines("a\nb\nc\nd\ne");
-        let labels = compute_line_labels(&lines, 1, 2, (1, 0));
+        let labels = compute_line_labels(&lines, 1, 2, (1, 0), LABEL_CHARS, false);
         // Only line 2 is visible and below cursor → one label 'a'.
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0], (2, 'a'));
@@ -433,7 +450,7 @@ mod tests {
         // 30 lines below cursor → only 26 get labels (a-z runs out).
         let text: String = (0..31).map(|i| format!("line{i}\n")).collect();
         let lines = styled_lines(text.trim_end());
-        let labels = compute_line_labels(&lines, 0, 31, (0, 0));
+        let labels = compute_line_labels(&lines, 0, 31, (0, 0), LABEL_CHARS, false);
         // 30 lines below, but only 26 letters → 26 labels.
         assert_eq!(labels.len(), 26);
         assert_eq!(labels[0], (1, 'a'));
