@@ -403,7 +403,12 @@ fn run_loop(
 ) -> io::Result<()> {
     loop {
         terminal.draw(|f| state.render_all(f.area(), f.buffer_mut()))?;
-        state.content_rows = terminal.size()?.height as usize;
+        // Content area = full height minus the 4-row footer
+        // (Constraint::Length(4) in render_all). The scroll math uses
+        // content_rows, so it must match the actual render area — not the
+        // full terminal height — or the cursor ends up below the visible
+        // content at the buffer end.
+        state.content_rows = terminal.size()?.height.saturating_sub(4) as usize;
         state.content_cols = terminal.size()?.width as usize;
 
         // Clamp scroll_y now that we have the real viewport height.
