@@ -191,7 +191,15 @@ enum Mode {
         partial_matches: Vec<flash::PartialMatch>,
         start_selection: bool,
     },
-    // LineJump, Search, Confirm arrive in Phases 6–8.
+    /// Line-jump: every visible line (except the cursor line) gets a
+    /// label in the gutter. `labels` = (line, label_char). Typing a
+    /// label jumps the cursor to that line (column preserved, clamped).
+    /// `start_selection` = true when entered via `L` (plant anchor on jump).
+    LineJump {
+        labels: Vec<(usize, char)>,
+        start_selection: bool,
+    },
+    // Search, Confirm arrive in Phases 7–8.
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -596,6 +604,38 @@ impl State {
         true
     }
 
+    /// Handle a key while in `Mode::LineJump`. Returns `true` if the popup
+    /// should stay open (always — line-jump never closes the popup).
+    fn handle_key_line_jump(
+        &mut self,
+        key: &crossterm::event::KeyEvent,
+        labels: Vec<(usize, char)>,
+        start_selection: bool,
+    ) -> bool {
+        use crossterm::event::KeyCode;
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char(c) => {
+                if let Some(&(line, _)) = labels.iter().find(|&&(_, lc)| lc == c) {
+                    // Preserve col if it fits on the target line, else clamp.
+                    let col = self.cursor.1.min(self.line_len(line));
+                    self.jump_to(line, col);
+                    if start_selection {
+                        self.anchor = Some(self.cursor);
+                    }
+                    self.mode = Mode::Normal;
+                } else {
+                    // Unrecognised char → cancel line-jump (per the original).
+                    self.mode = Mode::Normal;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
     fn scroll_cursor_into_view(&mut self) {
         if self.cursor.0 < self.scroll_y {
             self.scroll_y = self.cursor.0;
@@ -716,6 +756,18 @@ impl State {
             _ => (0, Vec::new(), Vec::new()),
         };
 
+        // Line-jump labels (Phase 6): (line, label_char) for the gutter.
+        let line_jump_labels: &[(usize, char)] =
+            if let Mode::LineJump { ref labels, .. } = self.mode {
+                labels
+            } else {
+                &[]
+            };
+        let line_jump_label_style = Style::default()
+            .bg(self.theme.jump_label_bg)
+            .fg(self.theme.jump_label_fg)
+            .add_modifier(Modifier::BOLD);
+
         let content_lines: Vec<Line<'static>> = visible
             .iter()
             .enumerate()
@@ -724,23 +776,29 @@ impl State {
                 let is_cursor_line = abs == cursor_line;
                 let dist = (abs as isize - cursor_line as isize).unsigned_abs();
 
-                let (gutter_str, gutter_style) = (
-                    format!(
-                        "{:>w$}{}",
-                        dist,
-                        if is_cursor_line { "► " } else { "  " },
-                        w = num_w
-                    ),
-                    if is_cursor_line {
-                        if self.anchor.is_some() {
-                            gutter_sel_style
-                        } else {
-                            gutter_cursor_style
-                        }
+                let (gutter_str, gutter_style) =
+                    if let Some(&(_, lc)) = line_jump_labels.iter().find(|&&(l, _)| l == abs) {
+                        // In LineJump mode, replace the gutter number with the label.
+                        (format!("{:>w$}  ", lc, w = num_w), line_jump_label_style)
                     } else {
-                        gutter_dim
-                    },
-                );
+                        (
+                            format!(
+                                "{:>w$}{}",
+                                dist,
+                                if is_cursor_line { "► " } else { "  " },
+                                w = num_w
+                            ),
+                            if is_cursor_line {
+                                if self.anchor.is_some() {
+                                    gutter_sel_style
+                                } else {
+                                    gutter_cursor_style
+                                }
+                            } else {
+                                gutter_dim
+                            },
+                        )
+                    };
                 let gutter = Span::styled(gutter_str, gutter_style);
 
                 let scroll_x = self.scroll_x;
@@ -876,8 +934,8 @@ impl State {
         }
         let line1 = Line::from(line1_spans);
 
-        // Key-hint line: in Jump mode, show the jump state; otherwise the
-        // Normal-mode keymap.
+        // Key-hint line: in Jump/LineJump mode, show the mode state;
+        // otherwise the Normal-mode keymap.
         let line2 = if let Mode::Jump {
             typed,
             labels,
@@ -912,6 +970,24 @@ impl State {
                 Span::styled("Esc", bold),
                 Span::raw(":cancel"),
             ])
+        } else if let Mode::LineJump {
+            labels,
+            start_selection,
+        } = &self.mode
+        {
+            let prefix = if *start_selection { "[SEL] " } else { "" };
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    format!("{}line jump — {} lines labeled", prefix, labels.len()),
+                    Style::default()
+                        .fg(self.theme.jump_label_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled("Esc", bold),
+                Span::raw(":cancel"),
+            ])
         } else {
             let mut line2_spans = vec![
                 Span::raw(" "),
@@ -921,6 +997,8 @@ impl State {
                 Span::raw(":word  "),
                 Span::styled("s/S", bold),
                 Span::raw(":jump  "),
+                Span::styled("l/L", bold),
+                Span::raw(":line  "),
                 Span::styled("Space", bold),
                 Span::raw(":select  "),
                 Span::styled("Esc", bold),
@@ -1026,6 +1104,14 @@ fn run_loop(
             state.handle_key_jump(&key, typed.clone(), labels.clone(), start_selection);
             continue;
         }
+        if let Mode::LineJump {
+            ref labels,
+            start_selection,
+        } = state.mode
+        {
+            state.handle_key_line_jump(&key, labels.clone(), start_selection);
+            continue;
+        }
 
         match key.code {
             // Esc cancel chain (Phase 4/5): in a mode → cancel mode (handled
@@ -1089,6 +1175,33 @@ fn run_loop(
             }
             KeyCode::Char('S') => {
                 state.recompute_jump(String::new(), true);
+            }
+            // ── Line-jump (Phase 6) ───────────────────────────────────────
+            // `l` enters LineJump mode; `L` (and `Shift-l`) enters
+            // select-line-jump (plants the anchor at the destination).
+            KeyCode::Char('l') => {
+                let labels = flash::compute_line_labels(
+                    &state.lines,
+                    state.scroll_y,
+                    state.content_rows,
+                    state.cursor,
+                );
+                state.mode = Mode::LineJump {
+                    labels,
+                    start_selection: false,
+                };
+            }
+            KeyCode::Char('L') => {
+                let labels = flash::compute_line_labels(
+                    &state.lines,
+                    state.scroll_y,
+                    state.content_rows,
+                    state.cursor,
+                );
+                state.mode = Mode::LineJump {
+                    labels,
+                    start_selection: true,
+                };
             }
             _ => {}
         }
