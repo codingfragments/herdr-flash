@@ -208,6 +208,15 @@ impl State {
         self.lines.get(line).map(|l| l.len()).unwrap_or(0)
     }
 
+    /// Character at a position, reading the `ch` field of the styled cell.
+    /// Returns `None` at EOL (col == line_len) or past the buffer end —
+    /// matching the original's `char_at` semantics so the motion helpers
+    /// port unchanged. Text operations read chars, never styles (see the
+    /// "Data model" note in PLANNING.md §11).
+    fn char_at(&self, line: usize, col: usize) -> Option<char> {
+        self.lines.get(line)?.get(col).map(|c| c.ch)
+    }
+
     fn move_up(&mut self) {
         if self.cursor.0 == 0 {
             return;
@@ -266,6 +275,141 @@ impl State {
         self.cursor.0 = (self.cursor.0 + half).min(last);
         self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
         self.recenter_scroll();
+    }
+
+    // ── Word motions (Phase 3) ───────────────────────────────────────────────
+    //
+    // Ported from the original `zellij-flash`. The only adaptation is
+    // `char_at`, which reads `StyledChar.ch` instead of indexing a
+    // `String`. The motion bodies, `cclass`, `next_pos`/`prev_pos` are
+    // verbatim — they operate on chars, never styles ("Data model" note,
+    // PLANNING.md §11). All motions end with `scroll_cursor_into_view`
+    // so the viewport follows the cursor exactly as arrow keys do.
+
+    /// Advance one step in stream order, wrapping at line ends.
+    fn next_pos(&self, line: usize, col: usize) -> Option<(usize, usize)> {
+        if col < self.line_len(line) {
+            Some((line, col + 1))
+        } else if line + 1 < self.lines.len() {
+            Some((line + 1, 0))
+        } else {
+            None
+        }
+    }
+
+    /// Retreat one step in stream order, wrapping at line starts.
+    fn prev_pos(&self, line: usize, col: usize) -> Option<(usize, usize)> {
+        if col > 0 {
+            Some((line, col - 1))
+        } else if line > 0 {
+            Some((line - 1, self.line_len(line - 1)))
+        } else {
+            None
+        }
+    }
+
+    /// Character class at a position. EOL (col == line_len) counts as Space.
+    /// `wide = true` → WORD mode: only Space vs NonSpace.
+    /// `wide = false` → word mode: Space | Word | Other.
+    fn cclass(&self, line: usize, col: usize, wide: bool) -> u8 {
+        match self.char_at(line, col) {
+            None => 0, // EOL = space
+            Some(c) if c.is_whitespace() => 0,
+            Some(_) if wide => 1,
+            Some(c) if c.is_alphanumeric() || c == '_' => 1,
+            Some(_) => 2,
+        }
+    }
+
+    /// `w` / `W` — forward to start of next word.
+    fn motion_w(&mut self, wide: bool) {
+        let (mut line, mut col) = self.cursor;
+        let start = self.cclass(line, col, wide);
+        // Skip current class run.
+        while let Some((nl, nc)) = self.next_pos(line, col) {
+            (line, col) = (nl, nc);
+            if self.cclass(line, col, wide) != start {
+                break;
+            }
+        }
+        // Skip spaces.
+        while self.cclass(line, col, wide) == 0 {
+            let Some((nl, nc)) = self.next_pos(line, col) else {
+                break;
+            };
+            (line, col) = (nl, nc);
+        }
+        self.cursor = (line, col);
+        self.scroll_cursor_into_view();
+    }
+
+    /// `b` / `B` — backward to start of previous word.
+    fn motion_b(&mut self, wide: bool) {
+        let (mut line, mut col) = self.cursor;
+        // Retreat one step first.
+        let Some((nl, nc)) = self.prev_pos(line, col) else {
+            return;
+        };
+        (line, col) = (nl, nc);
+        // Skip spaces backward.
+        while self.cclass(line, col, wide) == 0 {
+            let Some((nl, nc)) = self.prev_pos(line, col) else {
+                break;
+            };
+            (line, col) = (nl, nc);
+        }
+        // Skip same-class run backward to find its start.
+        let target = self.cclass(line, col, wide);
+        while let Some((nl, nc)) = self.prev_pos(line, col) {
+            if self.cclass(nl, nc, wide) == target {
+                (line, col) = (nl, nc);
+            } else {
+                break;
+            }
+        }
+        self.cursor = (line, col);
+        self.scroll_cursor_into_view();
+    }
+
+    /// `e` / `E` — forward to end of current / next word.
+    fn motion_e(&mut self, wide: bool) {
+        let (mut line, mut col) = self.cursor;
+        // Advance one step first.
+        let Some((nl, nc)) = self.next_pos(line, col) else {
+            return;
+        };
+        (line, col) = (nl, nc);
+        // Skip spaces.
+        while self.cclass(line, col, wide) == 0 {
+            let Some((nl, nc)) = self.next_pos(line, col) else {
+                break;
+            };
+            (line, col) = (nl, nc);
+        }
+        // Advance through current class run until class changes.
+        let target = self.cclass(line, col, wide);
+        while let Some((nl, nc)) = self.next_pos(line, col) {
+            if self.cclass(nl, nc, wide) == target {
+                (line, col) = (nl, nc);
+            } else {
+                break;
+            }
+        }
+        self.cursor = (line, col);
+        self.scroll_cursor_into_view();
+    }
+
+    /// `0` — start of line.
+    fn motion_line_start(&mut self) {
+        self.cursor.1 = 0;
+        self.scroll_x_into_view();
+    }
+
+    /// `$` — end of line (last char, not past it).
+    fn motion_line_end(&mut self) {
+        let len = self.line_len(self.cursor.0);
+        self.cursor.1 = len.saturating_sub(1);
+        self.scroll_x_into_view();
     }
 
     fn scroll_cursor_into_view(&mut self) {
@@ -549,6 +693,17 @@ fn run_loop(
             KeyCode::Right => state.move_right(),
             KeyCode::PageUp => state.page_up(),
             KeyCode::PageDown => state.page_down(),
+            // ── Word motions (Phase 3) ────────────────────────────────────
+            // Crossterm delivers the uppercase char when Shift is held, so
+            // `W`/`B`/`E` map to the WORD (wide) variants.
+            KeyCode::Char('w') => state.motion_w(false),
+            KeyCode::Char('W') => state.motion_w(true),
+            KeyCode::Char('b') => state.motion_b(false),
+            KeyCode::Char('B') => state.motion_b(true),
+            KeyCode::Char('e') => state.motion_e(false),
+            KeyCode::Char('E') => state.motion_e(true),
+            KeyCode::Char('0') => state.motion_line_start(),
+            KeyCode::Char('$') => state.motion_line_end(),
             _ => {}
         }
     }
@@ -660,5 +815,135 @@ mod tests {
         for c in &lines[0] {
             assert_eq!(c.style, Style::default());
         }
+    }
+
+    // ── Word motion tests (Phase 3) ──────────────────────────────────────────
+    //
+    // These exercise the text-ops-read-ch contract from the ANSI-color
+    // data model: motions run on plain-text fixtures and must land on the
+    // right char regardless of styling. `motion_ignores_style` confirms
+    // the `ch` field is the only input.
+
+    fn state_from_text(text: &str) -> State {
+        let mut state = State {
+            lines: parse_ansi_lines(text),
+            ..State::default()
+        };
+        if state.lines.is_empty() {
+            state.lines.push(Vec::new());
+        }
+        state.content_rows = state.lines.len().max(1);
+        state.content_cols = state
+            .lines
+            .iter()
+            .map(|l| l.len())
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        state
+    }
+
+    // Fixture: "foo bar.baz" — cols: f0 o1 o2 sp3 b4 a5 r6 .7 b8 a9 z10
+    // word classes: Word(0-2) Space(3) Word(4-6) Other(7) Word(8-10)
+
+    #[test]
+    fn motion_w_lands_on_next_word_start() {
+        let mut s = state_from_text("foo bar.baz");
+        s.cursor = (0, 0);
+        s.motion_w(false);
+        assert_eq!(s.cursor, (0, 4));
+        s.motion_w(false);
+        assert_eq!(s.cursor, (0, 7));
+        s.motion_w(false);
+        assert_eq!(s.cursor, (0, 8));
+    }
+
+    #[test]
+    fn motion_big_w_uses_word_semantics() {
+        // WORD = non-whitespace run, so bar.baz is one WORD.
+        let mut s = state_from_text("foo bar.baz");
+        s.cursor = (0, 0);
+        s.motion_w(true);
+        assert_eq!(s.cursor, (0, 4));
+        s.motion_w(true);
+        // W from col 4 skips bar.baz (one WORD) and lands at EOL (col 11).
+        assert_eq!(s.cursor, (0, 11));
+    }
+
+    #[test]
+    fn motion_b_moves_backward_to_word_start() {
+        let mut s = state_from_text("foo bar.baz");
+        s.cursor = (0, 8);
+        s.motion_b(false);
+        assert_eq!(s.cursor, (0, 7));
+        s.motion_b(false);
+        assert_eq!(s.cursor, (0, 4));
+        s.motion_b(false);
+        assert_eq!(s.cursor, (0, 0));
+    }
+
+    #[test]
+    fn motion_e_moves_to_word_end() {
+        let mut s = state_from_text("foo bar.baz");
+        s.cursor = (0, 0);
+        s.motion_e(false);
+        assert_eq!(s.cursor, (0, 2));
+        s.motion_e(false);
+        assert_eq!(s.cursor, (0, 6));
+        s.motion_e(false);
+        assert_eq!(s.cursor, (0, 7));
+        s.motion_e(false);
+        assert_eq!(s.cursor, (0, 10));
+    }
+
+    #[test]
+    fn motion_wraps_across_lines() {
+        let mut s = state_from_text("foo bar\nbaz qux");
+        s.cursor = (0, 6); // on r, last char of line 0
+        s.motion_w(false);
+        assert_eq!(s.cursor, (1, 0));
+        // b from (1,0) wraps back and lands on the START of bar (col 4),
+        // not the end — b goes to word start, not word end.
+        s.cursor = (1, 0);
+        s.motion_b(false);
+        assert_eq!(s.cursor, (0, 4));
+    }
+
+    #[test]
+    fn motion_line_start_and_end() {
+        let mut s = state_from_text("hello world");
+        s.cursor = (0, 5);
+        s.motion_line_end();
+        assert_eq!(s.cursor, (0, 10));
+        s.motion_line_start();
+        assert_eq!(s.cursor, (0, 0));
+    }
+
+    #[test]
+    fn motion_on_empty_line_clamps() {
+        let mut s = state_from_text("\n\n");
+        s.cursor = (1, 0);
+        s.motion_line_end();
+        assert_eq!(s.cursor, (1, 0));
+        s.motion_w(false);
+        assert!(s.cursor.0 >= 1);
+    }
+
+    /// Motions read ch, never Style — a styled fixture must produce the
+    /// same cursor movement as its plain-text equivalent.
+    #[test]
+    fn motion_ignores_style() {
+        let mut plain = state_from_text("foo bar.baz");
+        let mut styled = state_from_text("\x1b[31mfoo\x1b[0m \x1b[1;32mbar.baz\x1b[0m");
+        // Same underlying chars.
+        assert_eq!(plain.lines[0].len(), styled.lines[0].len());
+        plain.cursor = (0, 0);
+        styled.cursor = (0, 0);
+        plain.motion_w(false);
+        styled.motion_w(false);
+        assert_eq!(plain.cursor, styled.cursor);
+        plain.motion_e(false);
+        styled.motion_e(false);
+        assert_eq!(plain.cursor, styled.cursor);
     }
 }
