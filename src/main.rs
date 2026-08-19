@@ -595,6 +595,13 @@ impl State {
         let gutter_cursor_style = Style::default()
             .fg(self.theme.gutter_cursor)
             .add_modifier(Modifier::BOLD);
+        // When a selection anchor is set, the current-line gutter marker
+        // (► + line number) switches to the selection indicator color
+        // (teal) — an always-in-view cue that selection mode is active,
+        // independent of where the cursor sits relative to the anchor.
+        let gutter_sel_style = Style::default()
+            .fg(self.theme.sel_indicator)
+            .add_modifier(Modifier::BOLD);
 
         // Normalized selection range (stream order), computed once for the
         // whole viewport. Per-line display ranges are derived inside the
@@ -618,7 +625,11 @@ impl State {
                         w = num_w
                     ),
                     if is_cursor_line {
-                        gutter_cursor_style
+                        if self.anchor.is_some() {
+                            gutter_sel_style
+                        } else {
+                            gutter_cursor_style
+                        }
                     } else {
                         gutter_dim
                     },
