@@ -6,19 +6,14 @@
 //! needed, just the theme + span-building helpers that the render methods
 //! in `main.rs` call.
 //!
-//! Phase 2 scope: theme (16 color roles, Catppuccin Macchiato defaults
-//! hardcoded), `build_line_spans` (cursor + base ANSI text — jump
-//! labels, search highlights, and selection styling arrive in later
-//! phases), and the `sel_range_for_line` / `center_x_for_width` helpers.
-//!
 //! ANSI color reproduction is a permanent capability (merged via
 //! `feature/ansi-color`): `build_line_spans` takes `&[StyledChar]`
 //! cells that each carry a base `Style` parsed from SGR escapes, and
-//! applies overlays with a **replace** policy — the cursor (and later
-//! selection/jump/search) cell fully overrides the base ANSI style on
-//! the cells it touches. See PLANNING.md §11 "Data model".
+//! applies overlays with a **replace** policy — every overlay (cursor,
+//! selection, jump label, jump match, partial) fully overrides the base
+//! ANSI style on the cells it touches. See PLANNING.md §11 "Data model".
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 /// Parse a "#rrggbb" or "rrggbb" hex string into a ratatui Color.
@@ -130,61 +125,118 @@ pub fn sel_range_for_line(
     Some((col_start, col_end))
 }
 
+/// Jump overlay data for one line, in display space.
+///
+/// `labels` = (display_col, label_char) for labeled matches on this line.
+/// `partial_cols` = display cols for partial-match highlights (too many
+/// matches to label). `typed_len` is the length of the typed prefix (for
+/// prefix-match highlighting on labeled matches).
+#[derive(Default)]
+pub struct JumpOverlay<'a> {
+    pub labels: &'a [(usize, char)],
+    pub partial_cols: &'a [usize],
+    pub typed_len: usize,
+}
+
 /// Build ratatui spans for one line of content.
 ///
 /// Cells carry a base `Style` parsed from ANSI SGR escapes. The overlay
-/// policy is **replace**: the cursor cell and selection cells fully
-/// override the base ANSI style on the cells they touch — they do not
-/// merge. This keeps the overlay predictable and matches how the plain-
-/// text original looked. Later phases add jump labels and search
-/// highlights on top of this — same replace policy.
+/// policy is **replace**: every overlay (cursor, selection, jump label,
+/// jump match, partial) fully overrides the base ANSI style on the cells
+/// it touches — no merge. Later phases add search highlights on top of
+/// this — same replace policy.
 ///
 /// Priority per character cell (highest wins):
-///   1. Cursor cell → cursor style (inverted), replacing base ANSI style
-///   2. Selection cell → selection style (blue bg), replacing base ANSI style
-///   3. Base ANSI style from the parsed cell
+///   1. Jump label → label style (peach bg, bold)
+///   2. Jump prefix match → match style (red fg, bold) — chars before the
+///      label on a labeled match
+///   3. Partial match → partial style (yellow fg, bold) — all typed chars
+///      when too many matches to label
+///   4. Cursor → cursor style (inverted)
+///   5. Selection → selection style (blue bg)
+///   6. Base ANSI style from the parsed cell
 ///
 /// `cells`: the visible slice of the line (after horizontal scroll),
 /// each carrying its base style.
 /// `cursor_col`: display-column index of the cursor on this line, or None.
 /// `sel_range`: optional `(start_col, end_col)` inclusive display-column
-/// range for the selection on this line, or None if this line isn't in
-/// the selection. Coordinates are already in display space (relative to
-/// `cells`, i.e. after horizontal scroll).
+/// range for the selection on this line, or None.
+/// `jump`: jump overlay data for this line (empty when not in Jump mode).
 pub fn build_line_spans(
     cells: &[crate::StyledChar],
     cursor_col: Option<usize>,
     sel_range: Option<(usize, usize)>,
+    jump: JumpOverlay,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let cursor_style = Style::default().bg(theme.cursor_bg).fg(theme.cursor_fg);
     let sel_style = Style::default().bg(theme.sel_bg).fg(theme.sel_fg);
+    let label_style = Style::default()
+        .bg(theme.jump_label_bg)
+        .fg(theme.jump_label_fg)
+        .add_modifier(Modifier::BOLD);
+    let match_style = Style::default()
+        .fg(theme.jump_match_fg)
+        .add_modifier(Modifier::BOLD);
+    let partial_style = Style::default()
+        .fg(theme.jump_partial_fg)
+        .add_modifier(Modifier::BOLD);
 
     let mut styled: Vec<(char, Style)> = cells
         .iter()
         .enumerate()
         .map(|(i, cell)| {
-            if cursor_col == Some(i) {
-                (cell.ch, cursor_style) // cursor replaces base
-            } else if let Some((s, e)) = sel_range {
-                if i >= s && i <= e {
-                    (cell.ch, sel_style) // selection replaces base
-                } else {
-                    (cell.ch, cell.style)
-                }
-            } else {
-                (cell.ch, cell.style)
+            // 1. Jump label (highest).
+            if let Some(&(_, lc)) = jump.labels.iter().find(|&&(lc, _)| lc == i) {
+                return (lc, label_style);
             }
+            // 2. Jump prefix match chars (labeled matches: chars before the label).
+            let in_jump_match = jump.typed_len > 1
+                && jump.labels.iter().any(|&(label_col, _)| {
+                    let start = label_col.saturating_sub(jump.typed_len - 1);
+                    i >= start && i < label_col
+                });
+            if in_jump_match {
+                return (cell.ch, match_style);
+            }
+            // 3. Partial match chars (too many matches: highlight all typed chars).
+            let in_partial = jump.typed_len > 0
+                && jump.partial_cols.iter().any(|&label_col| {
+                    let start = label_col.saturating_sub(jump.typed_len - 1);
+                    i >= start && i <= label_col
+                });
+            if in_partial {
+                return (cell.ch, partial_style);
+            }
+            // 4. Cursor.
+            if cursor_col == Some(i) {
+                return (cell.ch, cursor_style);
+            }
+            // 5. Selection.
+            if let Some((s, e)) = sel_range {
+                if i >= s && i <= e {
+                    return (cell.ch, sel_style);
+                }
+            }
+            // 6. Base ANSI style.
+            (cell.ch, cell.style)
         })
         .collect();
 
     // Cursor or selection past end of line: render a blank styled cell.
-    // The cursor wins over selection for the past-end cell (cursor is the
-    // active position); a selection extending past EOL only paints the
-    // real cells, not a virtual one.
+    // The cursor wins over selection for the past-end cell.
     let past_end = cursor_col.map(|c| c >= cells.len()).unwrap_or(false);
     if past_end {
-        styled.push((' ', cursor_style));
+        let style = if let Some((s, e)) = sel_range {
+            if cells.len() >= s && cells.len() <= e {
+                sel_style
+            } else {
+                cursor_style
+            }
+        } else {
+            cursor_style
+        };
+        styled.push((' ', style));
     }
 
     // Merge consecutive cells with the same style into spans.
