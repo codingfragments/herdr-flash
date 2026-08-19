@@ -372,6 +372,7 @@ scope.
 | Profile cycling `g` (re-grab) | Phase 9 | |
 | Config: `profiles`, `size`, `labels`, `line_labels`, 16 `color_*` | Phase 9 | TOML under `$HERDR_PLUGIN_CONFIG_DIR`; per-keybind depth via `[profiles.<name>]` |
 | Manifest + keybinding actions | Phase 10 | `[[actions]]` per profile |
+| Keybinding dialog (`?`) | Phase 9b | Replaces always-visible footer hints with on-demand overlay |
 | CI, release, docs | Phase 11 | |
 
 ### Phase 1 — Socket client + raw popup echo
@@ -716,6 +717,31 @@ configured `labels` charset in half.
 6. Override a `color_*` key — confirm the new color renders.
 7. Malformed `config.toml` → stderr message + built-in defaults, no
 crash.
+
+### Phase 9b — Keybinding dialog (`?`)
+
+**Prompt:** Remove the always-visible keybinding hints from the footer
+(the second line that shows `↑↓←→:move  w/W/b/B/e/E:word  s/S:jump  …`)
+and replace them with a `?` key that opens a keybinding dialog overlay.
+The dialog lists all available keys, grouped by mode (Normal, Jump,
+LineJump, Search, Confirm), and dismisses on any key. The footer's
+second line becomes either empty or carries only the transient message
+(warnings like "No selection — press Space to anchor"). This declutters
+the view and keeps the hints available on demand without occupying
+permanent screen space.
+
+**Scope:** `Mode::Help` (or a help-overlay flag), `?` keybinding,
+help-overlay rendering (centered box, grouped key list), footer change
+(drop the key-hint line), `Esc`/any-key dismisses.
+
+**Out of scope:** config, manifest, CI.
+
+**Manual test plan:**
+1. `just relink`.
+2. Confirm the footer no longer shows the keybinding hints by default.
+3. Press `?` — confirm the keybinding dialog appears, grouped by mode.
+4. Press any key — dialog dismisses, returns to the previous mode.
+5. A transient warning (e.g. "No selection") still shows in the footer.
 
 ### Phase 10 — Manifest + keybinding actions + docs
 
