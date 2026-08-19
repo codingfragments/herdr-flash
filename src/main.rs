@@ -21,9 +21,9 @@ use crossterm::{cursor, execute};
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use ratatui::Terminal;
 
 use render::Theme;
@@ -238,6 +238,11 @@ enum Mode {
     /// `pane.send_text`, on cancel the selection is preserved.
     Confirm {
         text: String,
+    },
+    /// Keybinding help overlay (`?`). Any key dismisses and returns to
+    /// the previous mode (Normal, or whatever was active before).
+    Help {
+        previous: Box<Mode>,
     },
 }
 
@@ -994,6 +999,11 @@ impl State {
 
         self.render_content(chunks[0], buf);
         self.render_footer(chunks[1], buf);
+
+        // Help overlay (Phase 9b): centered dialog on top of everything.
+        if let Mode::Help { .. } = &self.mode {
+            self.render_help(area, buf);
+        }
     }
 
     fn render_content(&self, area: Rect, buf: &mut Buffer) {
@@ -1382,42 +1392,183 @@ impl State {
                 ),
             ])
         } else {
-            let mut line2_spans = vec![
-                Span::raw(" "),
-                Span::styled("↑↓←→", bold),
-                Span::raw(":move  "),
-                Span::styled("w/W/b/B/e/E", bold),
-                Span::raw(":word  "),
-                Span::styled("s/S", bold),
-                Span::raw(":jump  "),
-                Span::styled("l/L", bold),
-                Span::raw(":line  "),
-                Span::styled("/", bold),
-                Span::raw(":search  "),
-                Span::styled("Enter", bold),
-                Span::raw(":copy  "),
-                Span::styled("p", bold),
-                Span::raw(":insert  "),
-                Span::styled("g", bold),
-                Span::raw(":cycle  "),
-                Span::styled("Space", bold),
-                Span::raw(":select  "),
-                Span::styled("Esc", bold),
-                Span::raw(":close"),
-            ];
+            // Normal mode (Phase 9b): no permanent keybinding hints in the
+            // footer — press `?` for the keybinding dialog. Only transient
+            // warnings (e.g. "No selection") show here.
+            let mut line2_spans = vec![Span::raw(" ")];
             if let Some(msg) = &self.message {
-                line2_spans.push(Span::raw("    "));
                 line2_spans.push(Span::styled(
                     msg.clone(),
                     Style::default().fg(self.theme.sel_indicator),
                 ));
             }
+            line2_spans.push(Span::raw("  "));
+            line2_spans.push(Span::styled(
+                "?",
+                Style::default().fg(self.theme.footer_dim),
+            ));
+            line2_spans.push(Span::raw(":help"));
             Line::from(line2_spans)
         };
 
         Paragraph::new(vec![line1, line2])
             .block(Block::default().borders(Borders::ALL))
             .render(area, buf);
+    }
+
+    /// Keybinding help overlay (Phase 9b): centered dialog listing all
+    /// keys, grouped by mode. Any key dismisses (handled in run_loop).
+    fn render_help(&self, area: Rect, buf: &mut Buffer) {
+        let bold = Style::default()
+            .fg(self.theme.footer_key)
+            .add_modifier(Modifier::BOLD);
+        let dim = Style::default().fg(self.theme.footer_dim);
+        let group_label = Style::default()
+            .fg(self.theme.sel_indicator)
+            .add_modifier(Modifier::BOLD);
+
+        // Build a column of lines from a list of (title, entries) groups.
+        let build_column = |groups: &[(&str, &[(&str, &str)])]| -> Vec<Line<'static>> {
+            let mut col: Vec<Line<'static>> = Vec::new();
+            for (title, entries) in groups {
+                col.push(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled((*title).to_string(), group_label),
+                ]));
+                for (key, desc) in *entries {
+                    col.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(format!("{:<12}", key), bold),
+                        Span::styled((*desc).to_string(), dim),
+                    ]));
+                }
+                col.push(Line::raw(""));
+            }
+            col
+        };
+
+        // Left column: Normal (the biggest group).
+        let left = build_column(&[(
+            "Normal",
+            &[
+                ("↑↓←→", "move cursor"),
+                ("w/W/b/B/e/E", "word / WORD motion"),
+                ("0 / $", "line start / end"),
+                ("PgUp/PgDn", "half-page up / down"),
+                ("Shift-←/→", "pan horizontally"),
+                ("s / S", "word-jump / select-jump"),
+                ("l / L", "line-jump / select-line-jump"),
+                ("/", "search"),
+                ("Space", "toggle selection anchor"),
+                ("Enter", "copy to clipboard"),
+                ("p", "insert into pane"),
+                ("g", "cycle scrollback depth"),
+                ("?", "this help"),
+                ("Esc", "clear selection / close"),
+            ],
+        )]);
+
+        // Right column: Jump, LineJump, Search, Confirm.
+        let right = build_column(&[
+            (
+                "Jump (s/S)",
+                &[
+                    ("type prefix", "narrow matches"),
+                    ("type label", "jump to match"),
+                    ("Backspace", "remove last char"),
+                    ("Esc", "cancel jump"),
+                ],
+            ),
+            (
+                "LineJump (l/L)",
+                &[("type label", "jump to line"), ("Esc", "cancel line-jump")],
+            ),
+            (
+                "Search (/)",
+                &[
+                    ("type query", "incremental search"),
+                    ("Enter", "confirm → nav phase"),
+                    ("n / N", "next / previous match"),
+                    ("Space", "anchor at match"),
+                    ("Esc", "done"),
+                ],
+            ),
+            (
+                "Confirm (multi-line insert)",
+                &[
+                    ("y / Enter", "confirm insert"),
+                    ("Esc", "cancel (keep selection)"),
+                ],
+            ),
+        ]);
+
+        // The trailing hint goes below both columns.
+        let hint_line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled("Press any key to dismiss", dim),
+        ]);
+
+        // Dialog background: dark base (Catppuccin Macchiato base #24273a),
+        // not the bright selection blue — a full dialog in sel_bg is too
+        // loud. The border uses the selection indicator (teal) so the
+        // dialog stands out against the content behind it.
+        let help_bg = Color::Rgb(36, 39, 58);
+        let help_border = self.theme.sel_indicator; // teal
+
+        // Size the dialog: two columns side by side. Width is capped so
+        // each column gets ~36 chars; height is the tallest column + the
+        // hint line + 2 for the border.
+        let col_w: u16 = 38;
+        let help_w = area.width.min(col_w * 2 + 2); // 2 cols + border + gap
+        let col_lines = left.len().max(right.len());
+        let help_h = area.height.min((col_lines + 3) as u16); // +hint +border
+        let x = area.x + (area.width.saturating_sub(help_w)) / 2;
+        let y = area.y + (area.height.saturating_sub(help_h)) / 2;
+        let help_area = Rect::new(x, y, help_w, help_h);
+
+        // Render the block (border + title) into the buffer first, then
+        // get the inner area for the columns. The block's own .render()
+        // paints the border and fills the background — no manual clear
+        // loop needed.
+        // Force-clear the entire dialog area first. ratatui's diff renderer
+        // only writes changed cells — without this, empty cells in the
+        // dialog (blank lines, the shorter column) keep the previous
+        // frame's content, causing bleed-through. `Clear` writes spaces
+        // to every cell, forcing the diff to see them as changed.
+        Clear.render(help_area, buf);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(help_border))
+            .style(Style::default().bg(help_bg))
+            .title(Span::styled(
+                " Keybindings ",
+                Style::default()
+                    .fg(help_border)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(help_area);
+        block.render(help_area, buf);
+
+        // Split inner into two columns + a hint row at the bottom.
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(col_w), Constraint::Length(col_w)])
+            .split(chunks[0]);
+
+        Paragraph::new(left)
+            .style(Style::default().bg(help_bg))
+            .render(cols[0], buf);
+        Paragraph::new(right)
+            .style(Style::default().bg(help_bg))
+            .render(cols[1], buf);
+        Paragraph::new(hint_line)
+            .style(Style::default().bg(help_bg))
+            .render(chunks[1], buf);
     }
 }
 
@@ -1540,6 +1691,11 @@ fn run_loop(
                 }
                 _ => {}
             }
+            continue;
+        }
+        // Help mode (Phase 9b): any key dismisses, returns to previous mode.
+        if let Mode::Help { previous } = state.mode.clone() {
+            state.mode = *previous;
             continue;
         }
 
@@ -1676,6 +1832,14 @@ fn run_loop(
                     continue;
                 }
                 break;
+            }
+            // ── Keybinding dialog (Phase 9b) ──────────────────────────────
+            // `?` opens the help overlay; any key dismisses it.
+            KeyCode::Char('?') => {
+                let prev = state.mode.clone();
+                state.mode = Mode::Help {
+                    previous: Box::new(prev),
+                };
             }
             _ => {}
         }
