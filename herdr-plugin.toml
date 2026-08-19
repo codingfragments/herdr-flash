@@ -13,7 +13,7 @@ title = "flash"
 command = ["./target/release/herdr-flash"]
 placement = "popup"
 width = "90%"
-height = "90%"
+height = "85%"
 
 # Launcher actions: each is a thin invocation of `herdr plugin pane
 # open` for the "flash" pane above, selecting a named *profile* via
@@ -29,10 +29,25 @@ height = "90%"
 # overlay covers the whole workspace, not just the active pane's rect
 # (confirmed live: "overlay and popup plugin panes target the active
 # pane" but the overlay rect is workspace-wide; --target-pane is
-# rejected for overlay/popup). Popup at 90%x90% replicates the original
+# rejected for overlay/popup). Popup at 90%x85% replicates the original
 # zellij-flash float (size "90%x90%") - the faithful port.
 
 [[actions]]
 id = "flash-open"
 title = "flash: scrollback selector"
 command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--placement", "popup", "--env", "FLASH_PROFILE=default"]
+
+[[actions]]
+id = "flash-200"
+title = "flash: 200 lines"
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--placement", "popup", "--env", "FLASH_PROFILE=200"]
+
+[[actions]]
+id = "flash-2000"
+title = "flash: 2000 lines"
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--placement", "popup", "--env", "FLASH_PROFILE=2000"]
+
+[[actions]]
+id = "flash-unlimited"
+title = "flash: unlimited scrollback"
+command = ["herdr", "plugin", "pane", "open", "--plugin", "herdr-flash", "--entrypoint", "flash", "--placement", "popup", "--env", "FLASH_PROFILE=unlimited"]

@@ -31,21 +31,19 @@ See [`doc/flash-jump.md`](doc/flash-jump.md) for the jump algorithm and
 
 | Doc | Covers |
 |---|---|
-| [`doc/config-reference.md`](doc/config-reference.md) | Full `config.toml` schema (profiles, size, labels, line_labels, colors) |
+| [`doc/config-reference.md`](doc/config-reference.md) | Full `config.toml` schema (profiles, labels, line_labels, colors) |
 | [`doc/keybinding.md`](doc/keybinding.md) | Shipped actions, binding a key, adding your own |
 | [`doc/flash-jump.md`](doc/flash-jump.md) | The word-jump algorithm + line-jump mechanic |
 | [`doc/use-cases.md`](doc/use-cases.md) | Worked walkthroughs |
-| [`doc/env-vars.md`](doc/env-vars.md) | The one env var involved |
-
-> **Status: planning.** The docs above are planned targets — see
-> [PLANNING.md §11](PLANNING.md#11-implementation-phases) for the phase
-> that writes each one. No code ships yet.
+| [`doc/env-vars.md`](doc/env-vars.md) | The environment variables involved |
 
 ## Configuration
 
 Optional — the plugin works with zero config, using the built-in
-`profiles` and `size` defaults. To change the scrollback depth profiles or
-the popup dimensions, copy [`config.example.toml`](config.example.toml) to:
+`default` profile (`depths = ["200", "5000", "unlimited", "viewport"]`).
+To change the scrollback depth cycle, the label charset, the line-jump
+scheme, or the theme colors, copy [`config.example.toml`](config.example.toml)
+to:
 
 ```sh
 herdr plugin config-dir herdr-flash   # prints the target directory
@@ -55,11 +53,10 @@ as `config.toml`. Full schema: [`doc/config-reference.md`](doc/config-reference.
 
 | Key | Default | Description |
 |---|---|---|
-| `profiles` | `"viewport,200,2000"` | Comma-separated scrollback depth profiles. `viewport` = visible area only; a number = that many scrollback lines. Cycled with `g`. |
-| `size` | `"90%x85%"` | Popup dimensions as `WIDTHxHEIGHT`. **Advisory on Herdr** — the popup's actual size is set by `[[panes]]` `width`/`height` at manifest time (no live resize); recorded here for parity. |
-| `labels` | `"a-zA-Z"` (52 chars) | Characters used as word-jump (`s`) labels. Any printable non-whitespace chars; duplicates removed; order preserved. |
-| `line_labels` | `"directional"` | Line-jump (`l`) scheme: `directional` (a-z below, A-Z above) or `unified` (split `labels` in half). |
-| `color_*` | Catppuccin Macchiato | 16 theme roles (`color_sel_bg`, `color_cursor_bg`, `color_gutter_mark`, `color_jump_label_bg`, `color_search_match_bg`, …) as `#rrggbb`. Omit any to keep the default. |
+| `log_level` | `"info"` | stderr diagnostic verbosity. |
+| `labels` | `a-zA-Z` (52 chars) | Word-jump (`s`) label charset. |
+| `line_labels` | `"directional"` | Line-jump (`l`) scheme: `directional` or `unified`. |
+| `color_*` | Catppuccin Macchiato | 16 theme roles as `#rrggbb`. Omit any to keep the default. |
 
 Per-keybind depth is configured via `[profiles.<name>]` blocks in your
 `config.toml` (each carrying a `depths` cycle list), selected at launch by
@@ -72,15 +69,21 @@ matching the sister `herdr-zextract` port's philosophy — see
 
 ## Keybinding
 
-The plugin ships ready-to-bind actions (one per built-in profile — e.g.
-`flash-open` for the default viewport profile, `flash-deep` for a deep
-scrollback profile), bound via `[[keys.command]]` entries with
-`type = "plugin_action"` in your own `~/.config/herdr/config.toml` —
-Herdr owns all keybindings, the plugin never binds its own keys. Each
-action just names a *profile*; the profile's actual scrollback depth and
-popup size live in your own `config.toml` under `[profiles.<name>]` (see
-Configuration above), not in the plugin's packaging. Full binding
-reference is in [`doc/keybinding.md`](doc/keybinding.md).
+The plugin ships four ready-to-bind actions, bound via
+`[[keys.command]]` entries with `type = "plugin_action"` in your own
+`~/.config/herdr/config.toml` — Herdr owns all keybindings, the plugin
+never binds its own keys. Each action opens the popup with a different
+starting scrollback depth via `FLASH_PROFILE`. Full binding reference
+is in [`doc/keybinding.md`](doc/keybinding.md).
+
+```toml
+[[keys.command]]
+key = "Alt f"
+action = "flash-open"
+type = "plugin_action"
+```
+
+Press `?` inside the popup for a full keybinding dialog.
 
 ## Build
 
@@ -101,12 +104,6 @@ all three via GitHub Actions — see
 [PLANNING.md §9](PLANNING.md#9-ci--release-plan-github-actions).
 
 ## Install
-
-*(Not yet available — both paths below are planned; see
-[PLANNING.md §8](PLANNING.md#8-install--distribution-plan) for full
-detail. Both build from source — there's no prebuilt-binary `install.sh`
-yet; GitHub Releases attach prebuilt binaries per target triple, but
-nothing consumes them automatically today.)*
 
 Requires [Herdr](https://herdr.dev/install.sh) itself, and a working
 Rust/`cargo` toolchain on the machine running the install command.
