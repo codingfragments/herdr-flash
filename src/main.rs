@@ -210,7 +210,12 @@ enum Mode {
         current: usize,
         navigating: bool,
     },
-    // Confirm arrives in Phase 8.
+    /// Waiting for `y`/Enter/Esc before inserting multi-line text.
+    /// `text` holds the pending selection; on confirm it goes to
+    /// `pane.send_text`, on cancel the selection is preserved.
+    Confirm {
+        text: String,
+    },
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -236,9 +241,12 @@ struct State {
     content_rows: usize,
     content_cols: usize,
     theme: Theme,
-    #[allow(dead_code)]
     mode: Mode,
     message: Option<String>,
+    /// Socket path for `pane.send_text` (insert action, Phase 8).
+    socket_path: Option<String>,
+    /// Source pane id (from launch context) for `pane.send_text`.
+    focused_pane_id: Option<String>,
 }
 
 impl Default for State {
@@ -255,6 +263,8 @@ impl Default for State {
             theme: Theme::default(),
             mode: Mode::Normal,
             message: None,
+            socket_path: None,
+            focused_pane_id: None,
         }
     }
 }
@@ -759,6 +769,81 @@ impl State {
         true
     }
 
+    // ── Actions (Phase 8) ────────────────────────────────────────────────────
+    //
+    // Copy and insert are the two terminal actions. Both flatten the
+    // styled-cell selection to plain text via `selected_text` (which
+    // uses `styled_line_to_plain_text`) — no style bytes reach the
+    // clipboard or the target pane (the conversion contract from the
+    // ANSI-color data model).
+
+    /// `Enter` — copy the selection to the clipboard via `arboard` and
+    /// close the popup. Warn (footer message, stay open) if there's no
+    /// selection. Returns `true` to stay open, `false` to close.
+    fn action_copy(&mut self) -> bool {
+        match self.selected_text() {
+            Some(text) => {
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => {
+                        if let Err(e) = cb.set_text(&text) {
+                            self.message = Some(format!("Clipboard error: {e}"));
+                            return true;
+                        }
+                        false // close the popup
+                    }
+                    Err(e) => {
+                        self.message = Some(format!("Clipboard unavailable: {e}"));
+                        true
+                    }
+                }
+            }
+            None => {
+                self.message = Some("No selection — press Space to anchor".to_string());
+                true
+            }
+        }
+    }
+
+    /// `Shift-Enter` — insert the selection into the source pane via
+    /// `pane.send_text` and close. Warn if no selection. Multi-line
+    /// selections enter `Mode::Confirm` first; single-line inserts
+    /// immediately. Returns `true` to stay open, `false` to close.
+    fn action_insert(&mut self) -> bool {
+        let Some(text) = self.selected_text() else {
+            self.message = Some("No selection — press Space to anchor".to_string());
+            return true;
+        };
+        if text.contains('\n') {
+            let line_count = text.lines().count();
+            self.mode = Mode::Confirm { text: text.clone() };
+            self.message = Some(format!(
+                "Insert {} lines into pane?  y/Enter:confirm  Esc:cancel",
+                line_count
+            ));
+            true
+        } else {
+            self.do_insert(text);
+            false
+        }
+    }
+
+    /// Send `text` to the source pane via `pane.send_text` and close.
+    /// Targets `focused_pane_id` from the launch context, regardless of
+    /// cursor position.
+    fn do_insert(&mut self, text: String) {
+        if let (Some(socket_path), Some(pane_id)) = (&self.socket_path, &self.focused_pane_id) {
+            let params = serde_json::json!({
+                "pane_id": pane_id,
+                "text": text,
+            });
+            if let Err(e) = socket_client::request(socket_path, "pane.send_text", params) {
+                eprintln!("herdr-flash: pane.send_text failed: {e}");
+            }
+        } else {
+            eprintln!("herdr-flash: cannot insert — socket_path or focused_pane_id not set");
+        }
+    }
+
     fn scroll_cursor_into_view(&mut self) {
         if self.cursor.0 < self.scroll_y {
             self.scroll_y = self.cursor.0;
@@ -1193,6 +1278,16 @@ impl State {
                     Span::raw(":cancel"),
                 ])
             }
+        } else if let Mode::Confirm { .. } = &self.mode {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    self.message.clone().unwrap_or_default(),
+                    Style::default()
+                        .fg(self.theme.sel_indicator)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
         } else {
             let mut line2_spans = vec![
                 Span::raw(" "),
@@ -1206,6 +1301,10 @@ impl State {
                 Span::raw(":line  "),
                 Span::styled("/", bold),
                 Span::raw(":search  "),
+                Span::styled("Enter", bold),
+                Span::raw(":copy  "),
+                Span::styled("Shift-Enter", bold),
+                Span::raw(":insert  "),
                 Span::styled("Space", bold),
                 Span::raw(":select  "),
                 Span::styled("Esc", bold),
@@ -1329,6 +1428,25 @@ fn run_loop(
             state.handle_key_search(&key, query.clone(), matches.clone(), current, navigating);
             continue;
         }
+        // Confirm mode: waiting for y/Enter/Esc before inserting multi-line text.
+        if let Mode::Confirm { text } = state.mode.clone() {
+            match key.code {
+                KeyCode::Char('y') if key.modifiers.is_empty() => {
+                    state.do_insert(text);
+                    break;
+                }
+                KeyCode::Enter => {
+                    state.do_insert(text);
+                    break;
+                }
+                KeyCode::Esc => {
+                    state.mode = Mode::Normal;
+                    // Selection is preserved (anchor stays set).
+                }
+                _ => {}
+            }
+            continue;
+        }
 
         match key.code {
             // Esc cancel chain (Phase 4/5): in a mode → cancel mode (handled
@@ -1432,6 +1550,22 @@ fn run_loop(
                     navigating: false,
                 };
             }
+            // ── Actions (Phase 8) ──────────────────────────────────────────
+            // `Enter` copies the selection to the clipboard and closes;
+            // `Shift-Enter` inserts into the source pane and closes.
+            // Both warn + stay open if there's no selection.
+            KeyCode::Enter if only_shift => {
+                if state.action_insert() {
+                    continue;
+                }
+                break;
+            }
+            KeyCode::Enter => {
+                if state.action_copy() {
+                    continue;
+                }
+                break;
+            }
             _ => {}
         }
     }
@@ -1447,6 +1581,8 @@ fn main() {
 
         let mut state = State {
             lines: parse_ansi_lines(&text),
+            socket_path: Some(socket_path),
+            focused_pane_id: Some(ctx.focused_pane_id.clone()),
             ..State::default()
         };
         if state.lines.is_empty() {
