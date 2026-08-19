@@ -54,14 +54,13 @@ fn launch_context() -> Result<LaunchContext, String> {
 }
 
 /// Read the source pane's scrollback via `pane.read` with
-/// `source = "recent_unwrapped"`.
-///
-/// Spike (`spike/ansi-color`): requests `format = "ansi"` +
-/// `strip_ansi = false` so the response carries raw SGR escapes, which
-/// we then parse into per-char ratatui `Style` cells. The plain-text
-/// parity path is `format = "text"` + `strip_ansi = true` (the API
-/// default); this spike deviates to learn whether color reproduction is
-/// viable on top of the overlay model.
+/// `source = "recent_unwrapped"`, requesting `format = "ansi"` +
+/// `strip_ansi = false` so the response carries raw SGR escapes. The
+/// caller parses these into per-char ratatui `Style` cells via
+/// `parse_ansi_lines` — see the "Data model" note in PLANNING.md §11.
+/// (The plain-text parity path would be `format = "text"` +
+/// `strip_ansi = true`, the API default; this plugin adopts ANSI color
+/// as a permanent beyond-parity capability.)
 fn read_scrollback(socket_path: &str, pane_id: &str) -> Result<String, String> {
     let params = serde_json::json!({
         "pane_id": pane_id,
@@ -79,11 +78,16 @@ fn read_scrollback(socket_path: &str, pane_id: &str) -> Result<String, String> {
         .ok_or_else(|| "pane.read response had no \"read.text\" field".to_string())
 }
 
-// ── ANSI → styled cells (spike) ───────────────────────────────────────────────
+// ── ANSI → styled cells ───────────────────────────────────────────────────────
 
 /// One character cell carrying its base style parsed from ANSI SGR.
-/// Later overlays (cursor, selection, jump labels) *replace* this base
-/// style on the cells they touch — the spike's overlay policy.
+///
+/// This is the line model for the whole plugin: `State::lines` holds
+/// `Vec<Vec<StyledChar>>`. Later overlays (cursor, selection, jump
+/// labels, search highlights) *replace* this base style on the cells
+/// they touch — the overlay policy (see PLANNING.md §11 "Data model").
+/// Text-only operations (motions, jump matching, search matching, copy,
+/// insert) read the `ch` field or use `styled_line_to_plain_text`.
 #[derive(Clone, Copy, Debug)]
 pub struct StyledChar {
     pub ch: char,
@@ -96,8 +100,8 @@ pub struct StyledChar {
 /// state carries across line boundaries correctly; we then flatten each
 /// resulting `Line`'s spans into per-char `(char, Style)` cells. On any
 /// parse failure we fall back to plain unstyled chars so the view never
-/// breaks — the spike is about whether color looks right, not whether
-/// the parser is bulletproof.
+/// breaks — color reproduction is a best-effort enhancement, not a
+/// crash-the-plugin concern.
 fn parse_ansi_lines(text: &str) -> Vec<Vec<StyledChar>> {
     use ansi_to_tui::IntoText as _;
     match text.into_text() {
@@ -128,6 +132,28 @@ fn parse_ansi_lines(text: &str) -> Vec<Vec<StyledChar>> {
             })
             .collect(),
     }
+}
+
+/// Extract plain text (no styles) from a line of styled cells.
+///
+/// This is the conversion contract for the action boundary: copy
+/// (`arboard`) and insert (`pane.send_text`) both target plain `String`,
+/// so the styled-cell model used for rendering must be flattened back
+/// to text. Search and jump matching also operate on plain text
+/// extracted this way, not on the `Style` field.
+#[allow(dead_code)] // used from Phase 4 (selected_text) / Phase 8 (copy/insert)
+fn styled_line_to_plain_text(line: &[StyledChar]) -> String {
+    line.iter().map(|c| c.ch).collect()
+}
+
+/// Extract the full captured text as plain lines joined by `\n`.
+#[allow(dead_code)] // used from Phase 8 (copy/insert of multi-line selections)
+fn styled_lines_to_plain_text(lines: &[Vec<StyledChar>]) -> String {
+    lines
+        .iter()
+        .map(|line| styled_line_to_plain_text(line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
@@ -566,9 +592,9 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     /// Verify the ANSI parser turns SGR escapes into per-char styles.
-    /// This is the core evidence for the spike: if these pass, the pipe
-    /// `pane.read(format=ansi) -> parse_ansi_lines -> styled cells` works
-    /// and the only remaining question is how it looks live.
+    /// These pin the core contract: `pane.read(format=ansi)` →
+    /// `parse_ansi_lines` → styled cells, with `Color::Reset` treated as
+    /// default and SGR state carried across newlines.
     #[test]
     fn parses_sgr_into_styled_cells() {
         let ansi = "\x1b[31mred\x1b[0m normal \x1b[32;1mbold green\x1b[0m";

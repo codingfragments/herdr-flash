@@ -71,6 +71,11 @@ input/copy actions (was host action calls, now `pane.send_text` +
 │  2. render.rs (ported ~as-is)                │
 │     - crossterm backend (new — previously     │
 │       host-owned) + ratatui                  │
+│     - ANSI color reproduction: pane.read      │
+│       format="ansi" parsed by ansi-to-tui     │
+│       into Vec<Vec<StyledChar>> (ch+Style);   │
+│       overlays (cursor/selection/jump/search) │
+│       replace base ANSI style per cell        │
 │     - relative line numbers, cursor           │
 │     - renders into a centered popup box        │
 │       (90%x90% of the workspace, matching       │
@@ -84,8 +89,10 @@ input/copy actions (was host action calls, now `pane.send_text` +
 │                                               │
 │  4. selection.rs                             │
 │     - precise text-range selection           │
-│     - copy → arboard clipboard               │
-│     - insert → pane.send_text               │
+│     - copy → arboard clipboard (plain text,  │
+│       styles stripped via                    │
+│       styled_line_to_plain_text)             │
+│     - insert → pane.send_text (plain text)   │
 │                                               │
 │  5. config.rs                                │
 │     - $HERDR_PLUGIN_CONFIG_DIR/config.toml   │
@@ -100,7 +107,7 @@ input/copy actions (was host action calls, now `pane.send_text` +
 | Plugin registration, `register_plugin!` | `herdr-plugin.toml` manifest, `[[panes]]` entry |
 | Keybind → `LaunchOrFocusPlugin` | `[[actions]]` → `herdr plugin pane open --placement popup --env FLASH_PROFILE=<name>`; bound via `[[keys.command]]` `type = "plugin_action"` in the user's own config |
 | Host owns terminal I/O; plugin issues render calls | Plugin owns a real PTY; `crossterm` backend directly (no alt-screen) |
-| Read focused pane content + scrollback depth (`profiles`) | `pane.read` with `source = "visible"` (viewport) or `"recent_unwrapped"` + `lines: u32` (N scrollback); response at `result.read.text` |
+| Read focused pane content + scrollback depth (`profiles`) | `pane.read` with `source = "visible"` (viewport) or `"recent_unwrapped"` + `lines: u32` (N scrollback); `format: "ansi"` + `strip_ansi: false` so the response carries SGR escapes (parsed into styled cells — see §11 "Data model"); response at `result.read.text` |
 | Write/paste into pane | `pane.send_text` with `{"pane_id", "text"}` (not `send_input`) |
 | Floating pane `size` config (`WIDTHxHEIGHT`) | Popup `width`/`height` in `[[panes]]` (cells or %); advisory since popup can't be resized live (per sister port). Overlay was investigated but covers the whole workspace, not just the active pane — not adopted. |
 | Clipboard (host `Clipboard` action) | `arboard` crate directly |
@@ -126,6 +133,9 @@ Rationale:
   - `ratatui` + `crossterm` (this time with the terminal backend enabled,
     since the plugin now owns the PTY directly — original had
     `default-features = false` because Zellij owned it).
+  - `ansi-to-tui` — parse `pane.read`'s `format: "ansi"` response into
+    per-char ratatui `Style` cells (`StyledChar { ch, style }`). The
+    line model for the whole plugin; see §11 "Data model".
   - `serde` / `serde_json` — socket protocol.
   - `arboard` — clipboard, macOS + Linux (X11/Wayland).
   - `toml` — user config (`config.toml`).
@@ -307,6 +317,40 @@ carries the goal and scope so a fresh session doesn't need the rest of this
 document to get oriented) and don't consider the phase done until its
 manual test plan passes against a real Herdr install.
 
+### Data model: styled cells (adopted via `feature/ansi-color`)
+
+The popup reproduces the source pane's ANSI colors and font attributes,
+not just plain text — a deliberate beyond-parity enhancement over the
+original `zellij-flash`, which rendered plain text only. `pane.read` is
+called with `format: "ansi"` + `strip_ansi: false`; the response is
+parsed by `ansi-to-tui` into `Vec<Vec<StyledChar>>` where
+`StyledChar { ch, style }` carries the base ratatui `Style` per cell.
+This is the line model (`State::lines`) for **all** phases from Phase 2
+onward.
+
+Consequences every phase must honor:
+
+- **Overlays replace, not merge.** Cursor, selection, jump-label, and
+  search-highlight cells fully override the base ANSI style on the cells
+  they touch (the policy confirmed during the `feature/ansi-color`
+  spike). No foreground/background merging with the underlying color.
+  `build_line_spans` already applies this for the cursor; later phases
+  extend it for their own overlays.
+- **Text operations use extracted plain text.** Word motions, jump
+  matching, and search matching operate on the `ch` field of each cell
+  (or on `styled_line_to_plain_text`), never on the `Style`. The styled
+  cell is a render-time concern; the logic layer sees chars.
+- **Copy/insert convert to plain text.** `arboard` (copy) and
+  `pane.send_text` (insert) take `String`, so
+  `styled_line_to_plain_text` / `styled_lines_to_plain_text` flatten the
+  cells back to text at the action boundary (Phase 8). Styles are never
+  sent to the clipboard or the target pane.
+- **`Color::Reset` is a sentinel, not a color.** `ansi-to-tui` emits
+  `Some(Color::Reset)` for `\x1b[0m`, not `None`. Any overlay logic
+  that asks "does this cell have a base style?" must treat `Reset` as
+  default. The replace policy sidesteps this today; a future merge
+  policy would not.
+
 ### Feature coverage (parity with zellij-flash v0.2.1)
 
 Every feature of the original v0.2.1 is delivered by exactly one phase
@@ -317,7 +361,7 @@ scope.
 |---|---|---|
 | Source-pane 4-tier picker (`source_pane.rs`) | Phase 1 | **Replaced** by reading `focused_pane_id` from `HERDR_PLUGIN_CONTEXT_JSON` — no `source_pane.rs` needed |
 | Scrollback extraction (`viewport` / `Lines(N)`) | Phase 1, 9 | `pane.read` `visible` / `recent_unwrapped`+`lines` |
-| Render: relative line numbers, 2-line footer, `…` overflow, buffer reuse | Phase 2 | crossterm backend (no ANSI emitter) |
+| Render: relative line numbers, 2-line footer, `…` overflow, buffer reuse | Phase 2 | crossterm backend; ANSI color reproduction via `ansi-to-tui` (adopted `feature/ansi-color`) |
 | Cursor/viewport: auto-follow, half-page PgUp/PgDn recenter, `Shift-←/→` pan | Phase 2 | |
 | Word motions `w/W/b/B/e/E/0/$` | Phase 3 | word vs WORD semantics |
 | Selection: anchor, extend, `Space` toggle, Esc chain | Phase 4 | orthogonal to mode |
@@ -420,8 +464,10 @@ selection (selection lands in Phase 4 — motions just move the cursor
 for now). `PgUp`/`PgDn` already shipped in Phase 2.
 
 **Scope:** `motion_w`/`motion_b`/`motion_e` (with `cclass`/
-`next_pos`/`prev_pos` helpers), `motion_line_start`/`motion_line_end`,
-wired into the key handler.
+`next_pos`/`prev_pos` helpers operating on the `ch` field of
+`StyledChar`), `motion_line_start`/`motion_line_end`, wired into the
+key handler. Motions read chars from the styled-cell line model — see
+the "Data model" note above.
 
 **Out of scope:** selection, jump, search, config.
 
@@ -444,9 +490,11 @@ footer shows `SEL N lines M chars` when a selection is active. Implement
 the `Esc` cancel chain: in a mode (jump/line-jump/search/confirm) →
 cancel mode; else if anchor set → clear anchor; else → close the popup.
 
-**Scope:** `anchor` field, `selection_range`/`selected_text`/
-`selection_info`, `Space` toggle, selection rendering in
-`build_line_spans`, Esc chain in the key handler.
+**Scope:** `anchor` field, `selection_range`/`selected_text`
+(extracts plain text via `styled_line_to_plain_text`)/`selection_info`,
+`Space` toggle, selection rendering in `build_line_spans` (replace
+policy — selection bg overrides the base ANSI style on touched cells),
+Esc chain in the key handler.
 
 **Out of scope:** jump modes, search, copy/insert actions (selection is
 visible and queryable but not yet actionable — that's Phase 8).
@@ -481,7 +529,9 @@ text). `Esc` cancels the jump without touching an existing anchor.
 ordering, typed-char exclusion, continuation-aware exclusion, partial
 fallback), `handle_key_jump`, `jump_to`, jump rendering in
 `render_content`/`build_line_spans`, `start_selection` flag wired to the
-Phase 4 anchor.
+Phase 4 anchor. Jump matching operates on the `ch` field of the styled
+cells (plain-text extraction); label/match/partial rendering uses the
+replace policy on top of base ANSI styles.
 
 **Out of scope:** line-jump (Phase 6), search (Phase 7), config-driven
 `labels` charset (Phase 9 — hardcode the 52-char `a-zA-Z` pool for now).
@@ -515,7 +565,9 @@ Phase 9; ship the directional scheme now.)
 
 **Scope:** `Mode::LineJump`, `compute_line_labels` (directional),
 `handle_key_line_jump`, gutter-label rendering in `render_content`,
-`start_selection` flag wired to the Phase 4 anchor.
+`start_selection` flag wired to the Phase 4 anchor. Line-jump matching
+operates on line indices (no text extraction needed); gutter labels
+replace the line-number gutter, not the styled content cells.
 
 **Out of scope:** `unified` line-label scheme (Phase 9), search.
 
@@ -545,7 +597,10 @@ match in another (bold). Footer shows `/query█` in input phase and
 
 **Scope:** `search.rs` — `Mode::Search` (input + nav),
 `compute_search_matches`, `search_current_from_cursor`, `handle_key_search`,
-search rendering in `render_content`/`build_line_spans`.
+search rendering in `render_content`/`build_line_spans`. Search matching
+operates on plain text extracted from styled cells
+(`styled_line_to_plain_text`); highlight rendering uses the replace
+policy on top of base ANSI styles.
 
 **Out of scope:** config.
 
@@ -575,6 +630,10 @@ selections insert immediately without confirmation.
 
 **Scope:** `action_copy`/`action_insert`/`do_insert`, `Mode::Confirm`,
 `arboard` dependency, `pane.send_text` call via `socket_client`.
+Selection text is flattened to plain `String` via
+`styled_line_to_plain_text`/`styled_lines_to_plain_text` before going
+to `arboard` (copy) or `pane.send_text` (insert) — no style bytes
+reach the clipboard or target pane.
 
 **Out of scope:** config, manifest actions.
 
@@ -781,14 +840,20 @@ confirmed in the Phase 1 / Phase 2 spikes.
 - **ANSI color in the scrollback buffer**: `pane.read` supports
   `format: "ansi"` + `strip_ansi: false` — confirmed live, returns full
   ANSI escape sequences (24-bit RGB color, bold, resets). The original
-  `zellij-flash` rendered **plain text, no ANSI color reproduction**
-  (its `doc/architecture.md` says so explicitly), so `format: "text"` +
-  `strip_ansi: true` (the API default) is parity. Phase 2 starts with
-  plain text (parity) and spikes ANSI passthrough (parsing ANSI into
-  `ratatui` `Style` spans) against the live render loop; the decision to
-  keep ANSI color is deferred to that spike. ANSI makes selection/cursor/
-  jump-label rendering more complex on top of styled cells, so it's a
-  beyond-parity candidate, not a v1 requirement.
+  `zellij-flash` rendered plain text, no ANSI color reproduction; this
+  port **adopts ANSI color as a permanent capability** (merged via
+  `feature/ansi-color`, between Phase 2 and Phase 3) — a deliberate
+  beyond-parity enhancement. `ansi-to-tui 8.0.1` parses the response
+  into per-char ratatui `Style` cells (`Vec<Vec<StyledChar>>`), which
+  becomes the line model for all subsequent phases. Spike findings:
+  (a) `ansi-to-tui` resolves cleanly against ratatui 0.30; (b) it
+  represents `\x1b[0m` reset as `Some(Color::Reset)` (a sentinel, not
+  `None`) — overlays that check for a base style must treat `Reset` as
+  default; (c) whole-block `into_text()` carries SGR state across `\n`
+  correctly. Overlay policy is **replace**: cursor/selection/jump-label/
+  search cells fully override the base ANSI style, no merge. See the
+  "Data model" note in §11 and `styled_line_to_plain_text` for the
+  plain-text conversion contract used by copy/insert/search/jump.
 
 ## 13. Ideas beyond parity
 

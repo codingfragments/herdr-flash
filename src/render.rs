@@ -7,9 +7,16 @@
 //! in `main.rs` call.
 //!
 //! Phase 2 scope: theme (16 color roles, Catppuccin Macchiato defaults
-//! hardcoded), `build_line_spans` (cursor + normal text only — jump
+//! hardcoded), `build_line_spans` (cursor + base ANSI text — jump
 //! labels, search highlights, and selection styling arrive in later
 //! phases), and the `sel_range_for_line` / `center_x_for_width` helpers.
+//!
+//! ANSI color reproduction is a permanent capability (merged via
+//! `feature/ansi-color`): `build_line_spans` takes `&[StyledChar]`
+//! cells that each carry a base `Style` parsed from SGR escapes, and
+//! applies overlays with a **replace** policy — the cursor (and later
+//! selection/jump/search) cell fully overrides the base ANSI style on
+//! the cells it touches. See PLANNING.md §11 "Data model".
 
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
@@ -125,14 +132,13 @@ pub fn sel_range_for_line(
 
 /// Build ratatui spans for one line of content.
 ///
-/// Spike (`spike/ansi-color`): cells now carry a base `Style` parsed from
-/// ANSI SGR escapes. The overlay policy is **replace**: the cursor cell
-/// (and, in later phases, selection / jump-label / search cells) fully
-/// overrides the base ANSI style on the cells it touches — it does not
-/// merge. This keeps the overlay predictable and matches how the plain-
-/// text original looked.
+/// Cells carry a base `Style` parsed from ANSI SGR escapes. The overlay
+/// policy is **replace**: the cursor cell (and, in later phases,
+/// selection / jump-label / search cells) fully overrides the base ANSI
+/// style on the cells it touches — it does not merge. This keeps the
+/// overlay predictable and matches how the plain-text original looked.
 ///
-/// Phase 2 priority per character cell (highest wins):
+/// Priority per character cell (highest wins):
 ///   1. Cursor cell → cursor style (inverted), replacing base ANSI style
 ///   2. Base ANSI style from the parsed cell
 ///
