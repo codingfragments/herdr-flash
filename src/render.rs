@@ -174,12 +174,16 @@ pub struct SearchOverlay<'a> {
 /// `cursor_col`: display-column index of the cursor on this line, or None.
 /// `sel_range`: optional `(start_col, end_col)` inclusive display-column
 /// range for the selection on this line, or None.
+/// `sel_pad`: number of selection-styled spaces to append past the line's
+/// visible content (block mode only, so the rectangle stays visible on
+/// short lines). 0 in stream mode.
 /// `jump`: jump overlay data for this line (empty when not in Jump mode).
 /// `search`: search overlay data for this line (empty when not in Search mode).
 pub fn build_line_spans(
     cells: &[crate::StyledChar],
     cursor_col: Option<usize>,
     sel_range: Option<(usize, usize)>,
+    sel_pad: usize,
     jump: JumpOverlay,
     search: SearchOverlay,
     theme: &Theme,
@@ -260,10 +264,22 @@ pub fn build_line_spans(
         })
         .collect();
 
-    // Cursor or selection past end of line: render a blank styled cell.
-    // The cursor wins over selection for the past-end cell.
-    let past_end = cursor_col.map(|c| c >= cells.len()).unwrap_or(false);
-    if past_end {
+    // Past-end rendering. Two cases can append blank styled cells beyond
+    // the line's visible content:
+    //   - Cursor past end of line (cursor_col >= cells.len()): one cell,
+    //     cursor style — unless it falls inside the selection (then sel).
+    //   - Block selection past end (sel_pad > 0): `sel_pad` cells with
+    //     selection style, so the rectangle stays visible on short lines.
+    // When both apply (cursor is a block corner past EOL), the cursor
+    // cell is part of the rectangle → selection style, and any remaining
+    // pad follows. (sel_pad is 0 in stream mode, so the cursor past-end
+    // path is the stream-mode behavior, unchanged.)
+    let cursor_past_end = cursor_col.map(|c| c >= cells.len()).unwrap_or(false);
+    if sel_pad > 0 {
+        for _ in 0..sel_pad {
+            styled.push((' ', sel_style));
+        }
+    } else if cursor_past_end {
         let style = if let Some((s, e)) = sel_range {
             if cells.len() >= s && cells.len() <= e {
                 sel_style

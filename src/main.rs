@@ -248,6 +248,27 @@ enum Mode {
 
 // ── State ────────────────────────────────────────────────────────────────────
 
+/// Kind of active selection. Orthogonal to `anchor`: the anchor + cursor
+/// pair always define the two corners; this controls how the region
+/// between them is interpreted.
+///
+/// `Stream` — the classic character-flow selection: the range
+/// `min(anchor,cursor)..=max(anchor,cursor)` in stream order, full lines
+/// in the middle (the original plugin's only mode).
+///
+/// `Block` — a rectangular (visual-block) selection: the rectangle whose
+/// opposite corners are the anchor and cursor. Each line between
+/// `min(anchor.line,cursor.line)` and `max(...)` contributes columns
+/// `min(anchor.col,cursor.col)..=max(anchor.col,cursor.col)`, clamped to
+/// the line's length; short lines are padded with spaces on copy so the
+/// pasted columns stay aligned. `v` toggles an active selection between
+/// the two kinds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SelectionKind {
+    Stream,
+    Block,
+}
+
 struct State {
     lines: Vec<Vec<StyledChar>>,
     cursor: (usize, usize),
@@ -259,6 +280,10 @@ struct State {
     /// the selection while the anchor is set. `Space` toggles it; the Esc
     /// chain clears it before closing the popup.
     anchor: Option<(usize, usize)>,
+    /// How the anchor/cursor pair is interpreted. Defaults to `Stream`;
+    /// reset to `Stream` whenever the anchor is cleared or a fresh anchor
+    /// is planted. `v` flips it on an active selection.
+    selection_kind: SelectionKind,
     /// Preferred column for vertical movement (vim-style): moving up/down
     /// clamps the cursor to the line length but remembers this value,
     /// snapping back to it when a later line is long enough. Horizontal
@@ -288,6 +313,7 @@ impl Default for State {
             lines: Vec::new(),
             cursor: (0, 0),
             anchor: None,
+            selection_kind: SelectionKind::Stream,
             preferred_col: 0,
             scroll_y: 0,
             scroll_x: 0,
@@ -524,7 +550,8 @@ impl State {
     // with the replace policy (blue bg overrides base ANSI style).
 
     /// Normalized selection range `(start, end)` in stream order, or None
-    /// when no anchor is set. `start <= end` lexicographically.
+    /// when no anchor is set. `start <= end` lexicographically. Only
+    /// meaningful in `Stream` mode; in `Block` mode use `selection_block`.
     fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
         let anchor = self.anchor?;
         let cursor = self.cursor;
@@ -535,12 +562,36 @@ impl State {
         }
     }
 
+    /// Rectangular selection `(line_lo, line_hi, col_lo, col_hi)` — the
+    /// rectangle whose opposite corners are the anchor and cursor — or
+    /// None when no anchor is set or the selection is in `Stream` mode.
+    /// Columns are inclusive and not yet clamped to per-line length (that
+    /// happens at the render/copy boundary, since each line may differ).
+    fn selection_block(&self) -> Option<(usize, usize, usize, usize)> {
+        if self.selection_kind != SelectionKind::Block {
+            return None;
+        }
+        let anchor = self.anchor?;
+        let (al, ac) = anchor;
+        let (cl, cc) = self.cursor;
+        Some((
+            al.min(cl),
+            al.max(cl),
+            ac.min(cc),
+            ac.max(cc),
+        ))
+    }
+
     /// Extract the selected text as a plain string (styles stripped) via
     /// `styled_line_to_plain_text`. This is the conversion contract for
     /// the action boundary (copy/insert land in Phase 8) — no style bytes
     /// reach the output.
     #[allow(dead_code)] // used from Phase 8 (copy/insert)
     fn selected_text(&self) -> Option<String> {
+        if self.selection_kind == SelectionKind::Block {
+            return self.selected_text_block();
+        }
+
         let ((sl, sc), (el, ec)) = self.selection_range()?;
 
         if sl == el {
@@ -569,9 +620,55 @@ impl State {
         Some(out)
     }
 
+    /// Block variant of `selected_text`: the rectangle between anchor and
+    /// cursor. Each line in the row range contributes columns
+    /// `col_lo..=col_hi` clamped to its length; lines shorter than `col_lo`
+    /// contribute a full row of spaces, and lines that end inside the
+    /// rectangle are right-padded with spaces so every output row has the
+    /// same width — keeping columns aligned when pasted (the point of a
+    /// block copy).
+    fn selected_text_block(&self) -> Option<String> {
+        let (line_lo, line_hi, col_lo, col_hi) = self.selection_block()?;
+        let width = col_hi.saturating_sub(col_lo) + 1;
+        let mut out = String::new();
+        for l in line_lo..=line_hi {
+            if l > line_lo {
+                out.push('\n');
+            }
+            match self.lines.get(l) {
+                Some(line) => {
+                    let len = line.len();
+                    if col_lo >= len {
+                        // Rectangle starts past this line's end → full pad.
+                        out.push_str(&" ".repeat(width));
+                    } else {
+                        let end = (col_hi + 1).min(len);
+                        let slice = &line[col_lo..end];
+                        let have = slice.len();
+                        out.push_str(&styled_line_to_plain_text(slice));
+                        if have < width {
+                            out.push_str(&" ".repeat(width - have));
+                        }
+                    }
+                }
+                None => out.push_str(&" ".repeat(width)),
+            }
+        }
+        Some(out)
+    }
+
     /// `(line_count, char_count)` for the active selection, or None.
-    /// Used by the footer's `SEL N lines M chars` indicator.
+    /// Used by the footer's `SEL N lines M chars` indicator. In block mode
+    /// the char count is the rectangle area (`lines * width`) since every
+    /// row is padded to the full width on copy.
     fn selection_info(&self) -> Option<(usize, usize)> {
+        if self.selection_kind == SelectionKind::Block {
+            let (line_lo, line_hi, col_lo, col_hi) = self.selection_block()?;
+            let lines = line_hi - line_lo + 1;
+            let width = col_hi.saturating_sub(col_lo) + 1;
+            return Some((lines, lines * width));
+        }
+
         let ((sl, sc), (el, ec)) = self.selection_range()?;
         let lines = el - sl + 1;
         let chars = if sl == el {
@@ -639,6 +736,7 @@ impl State {
                         self.jump_to(line, jump_col);
                         if start_selection {
                             self.anchor = Some(self.cursor);
+                            self.selection_kind = SelectionKind::Stream;
                         }
                         self.mode = Mode::Normal;
                         return true;
@@ -681,6 +779,7 @@ impl State {
                     self.jump_to(line, col);
                     if start_selection {
                         self.anchor = Some(self.cursor);
+                        self.selection_kind = SelectionKind::Stream;
                     }
                     self.mode = Mode::Normal;
                 } else {
@@ -743,6 +842,7 @@ impl State {
                 KeyCode::Char(' ') if key.modifiers.is_empty() => {
                     // Exit search and anchor selection at current match start.
                     self.anchor = Some(self.cursor);
+                    self.selection_kind = SelectionKind::Stream;
                     self.mode = Mode::Normal;
                 }
                 KeyCode::Char('n') if key.modifiers.is_empty() => {
@@ -928,6 +1028,7 @@ impl State {
         }
         // Reset view state: cursor to bottom, clear selection, reset scroll.
         self.anchor = None;
+        self.selection_kind = SelectionKind::Stream;
         self.scroll_x = 0;
         let last = self.lines.len().saturating_sub(1);
         self.cursor = (last, 0);
@@ -1044,11 +1145,16 @@ impl State {
             .fg(self.theme.sel_indicator)
             .add_modifier(Modifier::BOLD);
 
-        // Normalized selection range (stream order), computed once for the
-        // whole viewport. Per-line display ranges are derived inside the
-        // map via `sel_range_for_line`, then shifted into display space
-        // (relative to scroll_x).
-        let sel = self.selection_range();
+        // Normalized selection range, computed once for the whole
+        // viewport. In Stream mode this is the character-flow range; per-
+        // line display ranges are derived inside the map via
+        // `sel_range_for_line`, then shifted into display space (relative
+        // to scroll_x). In Block mode the per-line range is the rectangle's
+        // columns clamped to each line, plus a past-end pad so the
+        // rectangle stays visible on short lines.
+        let sel_stream =
+            if self.selection_kind == SelectionKind::Stream { self.selection_range() } else { None };
+        let sel_block = self.selection_block();
 
         // Jump overlay data (Phase 5): extract from Mode::Jump once for
         // the viewport. Per-line labels/partials are filtered inside the
@@ -1148,25 +1254,65 @@ impl State {
                     None
                 };
 
-                // Selection range for this line, in display space.
-                // `sel_range_for_line` returns logical (start_col, end_col)
-                // inclusive; shift by scroll_x so they index into `cells`.
-                // Skip if the selection on this line is entirely off-screen
-                // (ends before scroll_x, or starts after the visible window).
-                let sel_disp = sel
-                    .and_then(|(s, e)| render::sel_range_for_line(s, e, abs, logical_len))
-                    .and_then(|(s, e)| {
-                        let visible_end = scroll_x + cells.len();
-                        if e < scroll_x || s >= visible_end {
-                            None
+                // Logical (start_col, end_col) inclusive selection range
+                // for this line, or None. Stream mode derives it from the
+                // normalized stream range; Block mode uses the rectangle
+                // columns clamped to this line's length (lines shorter
+                // than col_lo get nothing on-cell — the pad below fills
+                // the gap past EOL).
+                let logical_sel: Option<(usize, usize)> = if let Some((s, e)) =
+                    sel_stream
+                {
+                    render::sel_range_for_line(s, e, abs, logical_len)
+                } else if let Some((llo, lhi, clo, chi)) = sel_block {
+                    if abs < llo || abs > lhi || logical_len == 0 {
+                        None
+                    } else {
+                        let last = logical_len.saturating_sub(1);
+                        Some((clo.min(last), chi.min(last)))
+                    }
+                } else {
+                    None
+                };
+                // Shift the logical range into display space (relative to
+                // scroll_x), dropping it if entirely off-screen.
+                let sel_disp = logical_sel.and_then(|(s, e)| {
+                    let visible_end = scroll_x + cells.len();
+                    if e < scroll_x || s >= visible_end {
+                        None
+                    } else {
+                        let ds = s.saturating_sub(scroll_x);
+                        let de = e
+                            .min(visible_end.saturating_sub(1))
+                            .saturating_sub(scroll_x);
+                        Some((ds, de.min(cells.len().saturating_sub(1))))
+                    }
+                });
+                // Block mode: number of selection-styled spaces to render
+                // past this line's visible end, so the rectangle stays
+                // visible (and the copy stays column-aligned) on lines
+                // shorter than the rectangle's right edge. Capped to the
+                // remaining visible width. 0 in Stream mode.
+                let sel_pad = if let Some((llo, lhi, _clo, chi)) = sel_block {
+                    if abs < llo || abs > lhi {
+                        0
+                    } else {
+                        // Columns of the rectangle that fall past the
+                        // line's visible content, in display space.
+                        let line_end_disp = cells.len(); // visible cells on this line
+                        let rect_right_disp = chi.saturating_sub(scroll_x);
+                        if rect_right_disp < line_end_disp {
+                            0
                         } else {
-                            let ds = s.saturating_sub(scroll_x);
-                            let de = e
-                                .min(visible_end.saturating_sub(1))
-                                .saturating_sub(scroll_x);
-                            Some((ds, de.min(cells.len().saturating_sub(1))))
+                            // From line_end_disp up to rect_right_disp
+                            // (inclusive), capped to the visible window.
+                            let avail = visible_w.saturating_sub(line_end_disp);
+                            (rect_right_disp + 1 - line_end_disp).min(avail)
                         }
-                    });
+                    }
+                } else {
+                    0
+                };
 
                 // Jump overlay for this line: filter labels and partials
                 // to those on `abs`, shift label_col to display space.
@@ -1230,6 +1376,7 @@ impl State {
                     &cells,
                     cur_col,
                     sel_disp,
+                    sel_pad,
                     jump,
                     search,
                     &self.theme,
@@ -1271,8 +1418,13 @@ impl State {
         ];
         if let Some((nlines, nchars)) = self.selection_info() {
             line1_spans.push(Span::raw("  "));
+            let label = if self.selection_kind == SelectionKind::Block {
+                format!("BLOCK {} lines {} chars", nlines, nchars)
+            } else {
+                format!("SEL {} lines {} chars", nlines, nchars)
+            };
             line1_spans.push(Span::styled(
-                format!("SEL {} lines {} chars", nlines, nchars),
+                label,
                 Style::default().fg(self.theme.sel_indicator),
             ));
         }
@@ -1460,6 +1612,7 @@ impl State {
                 ("l / L", "line-jump / select-line-jump"),
                 ("/", "search"),
                 ("Space", "toggle selection anchor"),
+                ("v", "toggle stream / block selection"),
                 ("Enter", "copy to clipboard"),
                 ("p", "insert into pane"),
                 ("g", "cycle scrollback depth"),
@@ -1706,6 +1859,7 @@ fn run_loop(
             KeyCode::Esc => {
                 if state.anchor.is_some() {
                     state.anchor = None;
+                    state.selection_kind = SelectionKind::Stream;
                 } else {
                     break;
                 }
@@ -1751,6 +1905,24 @@ fn run_loop(
                     state.scroll_cursor_into_view();
                 } else {
                     state.anchor = Some(state.cursor);
+                    state.selection_kind = SelectionKind::Stream;
+                }
+            }
+            // ── Block selection toggle ───────────────────────────────
+            // `v` flips an active selection between Stream (character
+            // flow) and Block (rectangular). Only meaningful once an
+            // anchor is set; with no selection it nudges the user to
+            // anchor first. A fresh anchor always starts in Stream mode,
+            // so `v` is the only way into Block.
+            KeyCode::Char('v') => {
+                if state.anchor.is_some() {
+                    state.selection_kind = match state.selection_kind {
+                        SelectionKind::Stream => SelectionKind::Block,
+                        SelectionKind::Block => SelectionKind::Stream,
+                    };
+                } else {
+                    state.message =
+                        Some("No selection — press Space to anchor".to_string());
                 }
             }
             // ── Word-jump (Phase 5) ──────────────────────────────────────
@@ -2185,5 +2357,66 @@ mod tests {
         assert_eq!(s.selection_range(), Some(((0, 0), (0, 1))));
         s.motion_w(false); // cursor jumps to 'w' of world at col 6
         assert_eq!(s.selection_range(), Some(((0, 0), (0, 6))));
+    }
+
+    // ── Block selection (Phase 10) ─────────────────────────────────────
+
+    /// Block extraction takes the rectangle between anchor and cursor.
+    /// Lines fully inside the rectangle contribute their slice; short
+    /// lines are right-padded with spaces so every output row has the
+    /// same width (column-aligned paste).
+    #[test]
+    fn block_selection_pads_short_lines() {
+        let mut s = state_from_text("abcdef\nxy\n1234567\nz");
+        // Rectangle: rows 0..=3, cols 2..=5.
+        s.anchor = Some((0, 2));
+        s.cursor = (3, 5);
+        s.selection_kind = SelectionKind::Block;
+        assert_eq!(
+            s.selected_text().as_deref(),
+            Some("cdef\n    \n3456\n    ")
+        );
+    }
+
+    /// `selection_block` normalizes corners regardless of which is the
+    /// anchor and which is the cursor (both diagonals give the same
+    /// rectangle).
+    #[test]
+    fn block_selection_normalizes_corners() {
+        let mut s = state_from_text("abcdef\nxy\n1234567");
+        s.selection_kind = SelectionKind::Block;
+        s.anchor = Some((0, 5));
+        s.cursor = (2, 2);
+        let a = s.selection_block();
+        s.anchor = Some((2, 2));
+        s.cursor = (0, 5);
+        let b = s.selection_block();
+        assert_eq!(a, b);
+        assert_eq!(a, Some((0, 2, 2, 5)));
+    }
+
+    /// `selection_info` in block mode reports the rectangle area
+    /// (lines * width), since every row is padded to full width on copy.
+    #[test]
+    fn block_selection_info_is_rectangle_area() {
+        let mut s = state_from_text("abcdef\nxy\n1234567\nz");
+        s.anchor = Some((0, 2));
+        s.cursor = (3, 5);
+        s.selection_kind = SelectionKind::Block;
+        assert_eq!(s.selection_info(), Some((4, 16))); // 4 lines * 4 cols
+    }
+
+    /// Stream mode is the default and unaffected by the block code path:
+    /// `selected_text` still walks full lines in the middle.
+    #[test]
+    fn stream_selection_still_walks_full_lines() {
+        let mut s = state_from_text("abcdef\nxy\n1234567");
+        s.anchor = Some((0, 2));
+        s.cursor = (2, 3);
+        // Stream (default): full middle line, no padding.
+        assert_eq!(
+            s.selected_text().as_deref(),
+            Some("cdef\nxy\n1234")
+        );
     }
 }
