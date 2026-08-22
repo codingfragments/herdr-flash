@@ -351,7 +351,8 @@ impl State {
             return;
         }
         self.cursor.0 -= 1;
-        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
+        let limit = self.vertical_col_limit();
+        self.cursor.1 = self.preferred_col.min(limit);
         self.scroll_cursor_into_view();
     }
 
@@ -360,7 +361,8 @@ impl State {
             return;
         }
         self.cursor.0 += 1;
-        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
+        let limit = self.vertical_col_limit();
+        self.cursor.1 = self.preferred_col.min(limit);
         self.scroll_cursor_into_view();
     }
 
@@ -369,7 +371,10 @@ impl State {
             self.cursor.1 -= 1;
             self.preferred_col = self.cursor.1;
             self.scroll_x_into_view();
-        } else if self.cursor.0 > 0 {
+        } else if self.selection_kind != SelectionKind::Block && self.cursor.0 > 0 {
+            // Wrap to the previous line's end (stream mode only). In
+            // block mode left at col 0 stays put so the rectangle's row
+            // stays stable while shaping its left edge.
             self.cursor.0 -= 1;
             self.cursor.1 = self.line_len(self.cursor.0);
             self.preferred_col = self.cursor.1;
@@ -378,12 +383,20 @@ impl State {
     }
 
     fn move_right(&mut self) {
-        let len = self.line_len(self.cursor.0);
-        if self.cursor.1 < len {
+        let block = self.selection_kind == SelectionKind::Block;
+        let limit = if block {
+            self.block_max_col()
+        } else {
+            self.line_len(self.cursor.0)
+        };
+        if self.cursor.1 < limit {
             self.cursor.1 += 1;
             self.preferred_col = self.cursor.1;
             self.scroll_x_into_view();
-        } else if self.cursor.0 + 1 < self.lines.len() {
+        } else if !block && self.cursor.0 + 1 < self.lines.len() {
+            // Wrap to the next line's start (stream mode only). In
+            // block mode right at the virtual cap stays put, keeping the
+            // rectangle's row stable.
             self.cursor.0 += 1;
             self.cursor.1 = 0;
             self.preferred_col = 0;
@@ -394,7 +407,8 @@ impl State {
     fn page_up(&mut self) {
         let half = (self.content_rows / 2).max(1);
         self.cursor.0 = self.cursor.0.saturating_sub(half);
-        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
+        let limit = self.vertical_col_limit();
+        self.cursor.1 = self.preferred_col.min(limit);
         self.recenter_scroll();
     }
 
@@ -402,8 +416,21 @@ impl State {
         let half = (self.content_rows / 2).max(1);
         let last = self.lines.len().saturating_sub(1);
         self.cursor.0 = (self.cursor.0 + half).min(last);
-        self.cursor.1 = self.preferred_col.min(self.line_len(self.cursor.0));
+        let limit = self.vertical_col_limit();
+        self.cursor.1 = self.preferred_col.min(limit);
         self.recenter_scroll();
+    }
+
+    /// Upper bound for the cursor column after a vertical move. In stream
+    /// mode that's the target line's length (vim-style clamp); in block
+    /// mode it's the virtual-space cap so the column persists across
+    /// lines of differing length (the rectangle's right edge stays put).
+    fn vertical_col_limit(&self) -> usize {
+        if self.selection_kind == SelectionKind::Block {
+            self.block_max_col()
+        } else {
+            self.line_len(self.cursor.0)
+        }
     }
 
     // ── Word motions (Phase 3) ───────────────────────────────────────────────
@@ -1083,6 +1110,28 @@ impl State {
         self.content_cols.saturating_sub(self.gutter_w())
     }
 
+    /// Virtual-space cap for the cursor column in block mode: the cursor
+    /// may move past a line's end "as if" the line were padded with
+    /// spaces. Practical cap = `max(longest line, visible width)` so the
+    /// rectangle can always cover all real content *and* extend into
+    /// visible empty space on short lines. In stream mode the cursor is
+    /// clamped to `line_len` instead (see the move helpers).
+    fn block_max_col(&self) -> usize {
+        let max_line = self.lines.iter().map(|l| l.len()).max().unwrap_or(0);
+        max_line.max(self.avail_w())
+    }
+
+    /// Clamp the cursor (and, if set, the anchor) back to real line
+    /// lengths. Used when leaving block mode: a block corner may sit in
+    /// virtual space past EOL, which is invalid in stream mode.
+    fn clamp_corners_to_lines(&mut self) {
+        let (cl, _) = self.cursor;
+        self.cursor.1 = self.cursor.1.min(self.line_len(cl));
+        if let Some((al, ac)) = self.anchor {
+            self.anchor = Some((al, ac.min(self.line_len(al))));
+        }
+    }
+
     // ── Rendering ────────────────────────────────────────────────────────────
 
     fn render_all(&self, area: Rect, buf: &mut Buffer) {
@@ -1269,7 +1318,14 @@ impl State {
                         None
                     } else {
                         let last = logical_len.saturating_sub(1);
-                        Some((clo.min(last), chi.min(last)))
+                        // Rectangle starts past this line's last real char:
+                        // no real cells are inside it — leave on-cell
+                        // empty; the virtual pad below fills the gap.
+                        if clo > last {
+                            None
+                        } else {
+                            Some((clo, chi.min(last)))
+                        }
                     }
                 } else {
                     None
@@ -1859,6 +1915,9 @@ fn run_loop(
             KeyCode::Esc => {
                 if state.anchor.is_some() {
                     state.anchor = None;
+                    if state.selection_kind == SelectionKind::Block {
+                        state.clamp_corners_to_lines();
+                    }
                     state.selection_kind = SelectionKind::Stream;
                 } else {
                     break;
@@ -1918,7 +1977,14 @@ fn run_loop(
                 if state.anchor.is_some() {
                     state.selection_kind = match state.selection_kind {
                         SelectionKind::Stream => SelectionKind::Block,
-                        SelectionKind::Block => SelectionKind::Stream,
+                        SelectionKind::Block => {
+                            // Leaving block mode: a corner may sit in
+                            // virtual space past EOL, invalid in stream
+                            // mode — clamp both corners back to their
+                            // line lengths.
+                            state.clamp_corners_to_lines();
+                            SelectionKind::Stream
+                        }
                     };
                 } else {
                     state.message =
@@ -2418,5 +2484,90 @@ mod tests {
             s.selected_text().as_deref(),
             Some("cdef\nxy\n1234")
         );
+    }
+
+    // ── Block-mode cursor movement (virtual space past EOL) ───────────
+
+    /// In block mode, `move_right` continues past the line's end into
+    /// virtual space (up to `block_max_col`), instead of wrapping to the
+    /// next line as it does in stream mode.
+    #[test]
+    fn block_move_right_past_eol_no_wrap() {
+        let mut s = state_from_text("abc\nxy");
+        // Give a wide virtual space so the cap isn't the limiting factor.
+        s.content_cols = 200;
+        s.cursor = (0, 2); // at 'c' (last char of "abc"), line_len = 3
+        s.selection_kind = SelectionKind::Block;
+        s.move_right(); // past EOL → col 3 (virtual)
+        assert_eq!(s.cursor, (0, 3));
+        s.move_right(); // col 4
+        assert_eq!(s.cursor, (0, 4));
+        // No wrap to line 1.
+        assert_eq!(s.cursor.0, 0);
+    }
+
+    /// In stream mode, the same move_right at EOL wraps to the next line
+    /// (regression guard: stream behavior unchanged).
+    #[test]
+    fn stream_move_right_at_eol_wraps() {
+        let mut s = state_from_text("abc\nxy");
+        s.content_cols = 200;
+        s.cursor = (0, 3); // at EOL of "abc" (len 3)
+        s.move_right(); // wrap to next line start
+        assert_eq!(s.cursor, (1, 0));
+    }
+
+    /// In block mode, `move_up`/`move_down` preserve the column across
+    /// lines of differing length (the rectangle's right edge stays put),
+    /// instead of clamping to the target line's length.
+    #[test]
+    fn block_vertical_preserves_column_past_eol() {
+        let mut s = state_from_text("abcdef\nxy\n1234567");
+        s.content_cols = 200;
+        // Cursor on line 0 at virtual col 5 (past "xy"'s length 2).
+        s.cursor = (0, 5);
+        s.preferred_col = 5;
+        s.selection_kind = SelectionKind::Block;
+        s.move_down(); // → line 1 ("xy", len 2)
+        assert_eq!(s.cursor, (1, 5)); // NOT clamped to 2
+        s.move_down(); // → line 2 ("1234567", len 7)
+        assert_eq!(s.cursor, (2, 5));
+    }
+
+    /// In stream mode, vertical moves clamp to the target line's length
+    /// (regression guard).
+    #[test]
+    fn stream_vertical_clamps_to_line_len() {
+        let mut s = state_from_text("abcdef\nxy");
+        s.content_cols = 200;
+        s.cursor = (0, 5);
+        s.preferred_col = 5;
+        s.move_down();
+        assert_eq!(s.cursor, (1, 2)); // clamped to "xy" len
+    }
+
+    /// In block mode, `move_left` at col 0 does not wrap to the previous
+    /// line (keeps the rectangle's row stable).
+    #[test]
+    fn block_move_left_at_zero_no_wrap() {
+        let mut s = state_from_text("abc\nxy");
+        s.content_cols = 200;
+        s.cursor = (1, 0);
+        s.selection_kind = SelectionKind::Block;
+        s.move_left();
+        assert_eq!(s.cursor, (1, 0)); // stays, no wrap to line 0
+    }
+
+    /// Leaving block mode clamps a corner that sits in virtual space back
+    /// to its line's real length.
+    #[test]
+    fn leaving_block_clamps_corner_to_line() {
+        let mut s = state_from_text("abc\nxy");
+        s.content_cols = 200;
+        s.cursor = (1, 5); // virtual, past "xy" len 2
+        s.anchor = Some((0, 0));
+        s.selection_kind = SelectionKind::Block;
+        s.clamp_corners_to_lines();
+        assert_eq!(s.cursor, (1, 2)); // clamped to line_len
     }
 }

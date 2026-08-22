@@ -270,14 +270,21 @@ pub fn build_line_spans(
     //     cursor style — unless it falls inside the selection (then sel).
     //   - Block selection past end (sel_pad > 0): `sel_pad` cells with
     //     selection style, so the rectangle stays visible on short lines.
-    // When both apply (cursor is a block corner past EOL), the cursor
-    // cell is part of the rectangle → selection style, and any remaining
-    // pad follows. (sel_pad is 0 in stream mode, so the cursor past-end
-    // path is the stream-mode behavior, unchanged.)
+    // When the cursor (a block corner) sits past EOL *inside* the pad,
+    // that one cell shows the cursor style instead of the selection
+    // style, so the corner stays visible. (sel_pad is 0 in stream mode,
+    // so the cursor past-end path is the stream-mode behavior, unchanged.)
     let cursor_past_end = cursor_col.map(|c| c >= cells.len()).unwrap_or(false);
     if sel_pad > 0 {
-        for _ in 0..sel_pad {
-            styled.push((' ', sel_style));
+        let start = cells.len();
+        for i in 0..sel_pad {
+            let col = start + i;
+            let style = if cursor_past_end && cursor_col == Some(col) {
+                cursor_style
+            } else {
+                sel_style
+            };
+            styled.push((' ', style));
         }
     } else if cursor_past_end {
         let style = if let Some((s, e)) = sel_range {
