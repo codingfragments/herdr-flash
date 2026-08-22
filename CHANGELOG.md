@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-08-22
+
+### Added
+
+- **Block (rectangular) selection mode** — `v` toggles an active
+  selection between the existing Stream (character-flow) mode and a new
+  Block (rectangular/visual-block) mode. The rectangle's opposite corners
+  are the anchor and cursor; each line in the row range contributes
+  columns `min(col)..=max(col)` clamped to its length. Short lines are
+  right-padded with spaces on copy so pasted columns stay aligned.
+- **Virtual-space cursor movement (block mode)** — in block mode the
+  cursor and anchor can move past a line's end as if the line were padded
+  with spaces (cap = `max(longest line, visible width)`), so the
+  rectangle's right edge can extend beyond the shortest line. Horizontal
+  moves don't wrap (keeping the rectangle's row stable); vertical moves
+  preserve the column across lines of differing length. Leaving block
+  mode clamps corners back to real positions. Stream mode is unchanged.
+- Footer shows `BLOCK N lines M chars` while in block mode; the `?` help
+  dialog lists `v` as "toggle stream / block selection".
+
 ## [0.1.0] - 2026-08-19
 
 First release: a Herdr port of the `zellij-flash` plugin, reaching
