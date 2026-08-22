@@ -601,12 +601,7 @@ impl State {
         let anchor = self.anchor?;
         let (al, ac) = anchor;
         let (cl, cc) = self.cursor;
-        Some((
-            al.min(cl),
-            al.max(cl),
-            ac.min(cc),
-            ac.max(cc),
-        ))
+        Some((al.min(cl), al.max(cl), ac.min(cc), ac.max(cc)))
     }
 
     /// Extract the selected text as a plain string (styles stripped) via
@@ -1201,8 +1196,11 @@ impl State {
         // to scroll_x). In Block mode the per-line range is the rectangle's
         // columns clamped to each line, plus a past-end pad so the
         // rectangle stays visible on short lines.
-        let sel_stream =
-            if self.selection_kind == SelectionKind::Stream { self.selection_range() } else { None };
+        let sel_stream = if self.selection_kind == SelectionKind::Stream {
+            self.selection_range()
+        } else {
+            None
+        };
         let sel_block = self.selection_block();
 
         // Jump overlay data (Phase 5): extract from Mode::Jump once for
@@ -1309,9 +1307,7 @@ impl State {
                 // columns clamped to this line's length (lines shorter
                 // than col_lo get nothing on-cell — the pad below fills
                 // the gap past EOL).
-                let logical_sel: Option<(usize, usize)> = if let Some((s, e)) =
-                    sel_stream
-                {
+                let logical_sel: Option<(usize, usize)> = if let Some((s, e)) = sel_stream {
                     render::sel_range_for_line(s, e, abs, logical_len)
                 } else if let Some((llo, lhi, clo, chi)) = sel_block {
                     if abs < llo || abs > lhi || logical_len == 0 {
@@ -1987,8 +1983,7 @@ fn run_loop(
                         }
                     };
                 } else {
-                    state.message =
-                        Some("No selection — press Space to anchor".to_string());
+                    state.message = Some("No selection — press Space to anchor".to_string());
                 }
             }
             // ── Word-jump (Phase 5) ──────────────────────────────────────
@@ -2438,10 +2433,7 @@ mod tests {
         s.anchor = Some((0, 2));
         s.cursor = (3, 5);
         s.selection_kind = SelectionKind::Block;
-        assert_eq!(
-            s.selected_text().as_deref(),
-            Some("cdef\n    \n3456\n    ")
-        );
+        assert_eq!(s.selected_text().as_deref(), Some("cdef\n    \n3456\n    "));
     }
 
     /// `selection_block` normalizes corners regardless of which is the
@@ -2480,10 +2472,7 @@ mod tests {
         s.anchor = Some((0, 2));
         s.cursor = (2, 3);
         // Stream (default): full middle line, no padding.
-        assert_eq!(
-            s.selected_text().as_deref(),
-            Some("cdef\nxy\n1234")
-        );
+        assert_eq!(s.selected_text().as_deref(), Some("cdef\nxy\n1234"));
     }
 
     // ── Block-mode cursor movement (virtual space past EOL) ───────────
