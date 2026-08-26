@@ -126,13 +126,14 @@ instead of jumping to the bottom.
   scrolled region wraps in the source; **drifts upward** when long lines
   wrap (the popup renders one unwrapped line per row, the source wraps
   — see PLANNING.md §11 "Data model"). One extra socket call at launch.
-- **`content`** — additionally read the source's current viewport text
-  (`pane.read source=visible`) and locate it inside the capture by
-  fingerprint-matching distinctive short lines. Sidesteps the wrap drift
-  entirely; falls back to `offset` when no unique anchor is found. Most
-  faithful to "what's on screen", but content-dependent (a viewport full
-  of duplicated/blank lines may not find a unique anchor). Two extra
-  socket calls at launch.
+- **`content`** *(experimental)* — additionally read the source's current
+  viewport text (`pane.read source=visible`) and locate it inside the
+  capture by fingerprint-matching distinctive short lines. Sidesteps the
+  wrap drift entirely; falls back to `offset` when no unique anchor is
+  found. Most faithful to "what's on screen", but content-dependent (a
+  viewport full of duplicated/blank lines may not find a unique anchor).
+  Two extra socket calls at launch. The matching heuristic may change in
+  a future release.
 
 When the source is scrolled **above** what was captured (e.g. `offset`
 mode with a `Lines(N)` profile where the source scrolled past N lines),

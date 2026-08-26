@@ -64,12 +64,15 @@ color_search_fg = "#24273a"
 #              when nothing in the scrolled region wraps; drifts upward
 #              when long lines wrap in the source (the popup renders one
 #              unwrapped line per row, the source wraps).
-#   "content"  additionally read the source's current viewport text and
-#              fingerprint-match it back into the capture. Sidesteps the
-#              wrap drift; falls back to "offset" when no unique anchor
-#              is found. Most faithful to "what's on screen".
+#   "content"  (EXPERIMENTAL) additionally read the source's current
+#              viewport text and fingerprint-match it back into the
+#              capture. Sidesteps the wrap drift; falls back to "offset"
+#              when no unique anchor is found. Most faithful to "what's
+#              on screen", but content-dependent — a viewport full of
+#              duplicated/blank lines may not find a unique anchor.
+#              Behavior may change in a future release.
 #
-# Start with "off"; switch to "offset" or "content" if you find yourself
+# Start with "off"; switch to "offset" if you find yourself
 # scrolling back up in the popup every time you open it on a scrolled pane.
 scroll_follow = "off"
 
