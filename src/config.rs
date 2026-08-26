@@ -191,7 +191,7 @@ pub fn load() -> Config {
     };
 
     // Parse the TOML. On error, warn and keep defaults.
-    let toml_value: toml::Value = match text.parse() {
+    let toml_value: toml::Value = match toml::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("herdr-flash: parse error in {}: {e}", config_path.display());
