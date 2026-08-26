@@ -1,0 +1,75 @@
+name: Tag release
+
+# Auto-tags a release when a `release/*` PR merges to `main`.
+#
+# Per CLAUDE.md §Release process, the release PR is a separate branch/PR
+# containing only the `Cargo.toml` version bump + `CHANGELOG.md` entry.
+# When that lands on `main`, this workflow reads the version from
+# `Cargo.toml` and, if no `v<version>` tag exists yet, creates and
+# pushes it. The existing `release.yml` then fires on the `v*.*.*` tag
+# push and builds/publishes the release (and refreshes the rolling
+# `latest` tag).
+#
+# This closes the gap that left 0.2.1 unreleased: the release PR merged
+# but the follow-up manual `git tag v<x.y.z> && git push origin v<x.y.z>`
+# was never run, and nothing failed loudly.
+#
+# Also runnable manually via `workflow_dispatch` to backfill a missed
+# tag (dispatch from the `main` branch tip; it tags `HEAD`).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # One tagger at a time per ref — prevents two release PRs landing in
+  # quick succession from racing on tag creation.
+  group: tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from Cargo.toml
+        id: ver
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "::error::Could not read version from Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Detected version $version -> tag v$version"
+
+      - name: Skip if tag already exists
+        id: exists
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify --quiet "refs/tags/${{ steps.ver.outputs.tag }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.ver.outputs.tag }} already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.ver.outputs.tag }}" -m "Release ${{ steps.ver.outputs.version }}"
+          git push origin "${{ steps.ver.outputs.tag }}"
