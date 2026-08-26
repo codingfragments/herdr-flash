@@ -142,6 +142,21 @@ the popup clamps to the oldest available line and shows a footer hint:
 
 Unknown values fall back to `off` with a stderr warning.
 
+### Copy mode is not supported
+
+Scroll-follow reads the pane's **terminal** scroll position via
+`pane.get`. Herdr's copy mode maintains its own scroll state that is
+separate from the terminal's normal scroll: while you're in copy mode
+the `offset_from_bottom` value does update (so `pane.get` sees it), but
+**exiting copy mode resets the terminal scroll to the bottom**. Since
+you must exit copy mode to trigger the flash keybind (copy mode
+captures keys), the reset happens before the popup can read the scroll
+position — so the popup always anchors at the bottom when opened from
+copy mode. This is terminal-level behavior the plugin can't work around.
+
+Mouse-wheel and keyboard scroll (outside copy mode) are tracked
+correctly.
+
 ---
 
 ## `[profiles.<name>]` — per-keybind depth cycle

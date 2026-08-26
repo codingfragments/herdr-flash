@@ -74,6 +74,12 @@ color_search_fg = "#24273a"
 #
 # Start with "off"; switch to "offset" if you find yourself
 # scrolling back up in the popup every time you open it on a scrolled pane.
+#
+# Note: copy mode is NOT supported. Herdr's copy mode keeps its own
+# scroll state separate from the terminal's normal scroll; exiting copy
+# mode (required to trigger the flash keybind) resets the terminal scroll
+# to the bottom before the popup can read it. So scroll-follow only
+# tracks mouse-wheel / keyboard scroll, not copy-mode scroll.
 scroll_follow = "off"
 
 # ── Profiles ─────────────────────────────────────────────────────────────
