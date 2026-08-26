@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-08-26
+
+### Added
+
+- **Scroll-follow (initial view position)** — new `scroll_follow` config
+  key controls where the popup opens when the source pane is scrolled
+  up. Three modes:
+  - `off` (default) — always open at the bottom of the captured text;
+    unchanged behavior; no extra socket calls.
+  - `offset` — read the source pane's scroll offset (`pane.get`) and
+    anchor the popup on the line the source viewport's bottom edge
+    shows. Exact when nothing in the scrolled region wraps; drifts
+    upward when long lines wrap in the source (the popup renders one
+    unwrapped line per row, the source wraps).
+  - `content` *(experimental)* — additionally read the source's current
+    viewport text (`pane.read source=visible`) and fingerprint-match
+    distinctive short lines back into the capture. Sidesteps the wrap
+    drift; falls back to `offset` when no unique anchor is found. Most
+    faithful to "what's on screen", but content-dependent. The matching
+    heuristic may change in a future release.
+  Source scrolled above what was captured (`Lines(N)` where offset ≥ N)
+  clamps to the oldest available line with a footer hint.
+
+### Fixed
+
+- **Config loader silently ignored all config keys.** The loader parsed
+  `config.toml` with `str::parse::<toml::Value>()`, but in the `toml`
+  1.x crate `Value: FromStr` parses a single TOML value expression, not
+  a full document — so every config file starting with a `#` comment
+  failed to parse and fell back to built-in defaults. Switched to
+  `toml::from_str(&text)`. This unblocks all config keys (`labels`,
+  `scroll_follow`, theme overrides, profiles), not just scroll-follow.
+
+### Limitations
+
+- **Copy mode is not supported by scroll-follow.** Herdr's copy mode
+  keeps its own scroll state separate from the terminal's normal scroll;
+  exiting copy mode (required to trigger the flash keybind) resets the
+  terminal scroll to the bottom before the popup can read it. So
+  scroll-follow only tracks mouse-wheel / keyboard scroll, not
+  copy-mode scroll. Terminal-level behavior, not workable from the
+  plugin. Documented in `doc/config-reference.md`.
+
 ## [0.2.0] - 2026-08-22
 
 ### Added
