@@ -105,6 +105,60 @@ color_search_fg = "#24273a"
 
 ---
 
+## `scroll_follow` — initial view position (scroll-follow)
+
+```toml
+scroll_follow = "off"   # default
+```
+
+One of `off`, `offset`, `content`. Controls where the popup's cursor and
+viewport land when it opens, relative to the **source pane's current
+scroll position** — so that if you've scrolled the source pane up to
+look at older output, the popup opens looking at that same region
+instead of jumping to the bottom.
+
+- **`off`** (default) — always open at the bottom of the captured text,
+  matching the original `zellij-flash` behavior. The source pane's scroll
+  state is ignored; no extra socket calls are made. Start here.
+- **`offset`** — read the source pane's `scroll.offset_from_bottom` (via
+  `pane.get`) and anchor the popup on the logical line that corresponds
+  to the source viewport's bottom screen-row. Exact when nothing in the
+  scrolled region wraps in the source; **drifts upward** when long lines
+  wrap (the popup renders one unwrapped line per row, the source wraps
+  — see PLANNING.md §11 "Data model"). One extra socket call at launch.
+- **`content`** *(experimental)* — additionally read the source's current
+  viewport text (`pane.read source=visible`) and locate it inside the
+  capture by fingerprint-matching distinctive short lines. Sidesteps the
+  wrap drift entirely; falls back to `offset` when no unique anchor is
+  found. Most faithful to "what's on screen", but content-dependent (a
+  viewport full of duplicated/blank lines may not find a unique anchor).
+  Two extra socket calls at launch. The matching heuristic may change in
+  a future release.
+
+When the source is scrolled **above** what was captured (e.g. `offset`
+mode with a `Lines(N)` profile where the source scrolled past N lines),
+the popup clamps to the oldest available line and shows a footer hint:
+`scrolled above capture — showing oldest available`.
+
+Unknown values fall back to `off` with a stderr warning.
+
+### Copy mode is not supported
+
+Scroll-follow reads the pane's **terminal** scroll position via
+`pane.get`. Herdr's copy mode maintains its own scroll state that is
+separate from the terminal's normal scroll: while you're in copy mode
+the `offset_from_bottom` value does update (so `pane.get` sees it), but
+**exiting copy mode resets the terminal scroll to the bottom**. Since
+you must exit copy mode to trigger the flash keybind (copy mode
+captures keys), the reset happens before the popup can read the scroll
+position — so the popup always anchors at the bottom when opened from
+copy mode. This is terminal-level behavior the plugin can't work around.
+
+Mouse-wheel and keyboard scroll (outside copy mode) are tracked
+correctly.
+
+---
+
 ## `[profiles.<name>]` — per-keybind depth cycle
 
 Each profile defines a `depths` list that `g` cycles through. Select

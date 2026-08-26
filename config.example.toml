@@ -52,6 +52,36 @@ color_search_match_bg = "#a6da95"
 color_search_current_bg = "#eed49f"
 color_search_fg = "#24273a"
 
+# ── Scroll-follow (initial view position) ────────────────────────────────
+# When the popup opens, where should it start? The source pane may be
+# scrolled up (not showing the latest output). This controls whether the
+# popup mirrors that scroll position.
+#
+#   "off"      (default) always open at the bottom of the captured text —
+#              the original behavior. No extra socket calls.
+#   "offset"   read the source pane's scroll offset and anchor the popup
+#              on the line the source viewport's bottom edge shows. Exact
+#              when nothing in the scrolled region wraps; drifts upward
+#              when long lines wrap in the source (the popup renders one
+#              unwrapped line per row, the source wraps).
+#   "content"  (EXPERIMENTAL) additionally read the source's current
+#              viewport text and fingerprint-match it back into the
+#              capture. Sidesteps the wrap drift; falls back to "offset"
+#              when no unique anchor is found. Most faithful to "what's
+#              on screen", but content-dependent — a viewport full of
+#              duplicated/blank lines may not find a unique anchor.
+#              Behavior may change in a future release.
+#
+# Start with "off"; switch to "offset" if you find yourself
+# scrolling back up in the popup every time you open it on a scrolled pane.
+#
+# Note: copy mode is NOT supported. Herdr's copy mode keeps its own
+# scroll state separate from the terminal's normal scroll; exiting copy
+# mode (required to trigger the flash keybind) resets the terminal scroll
+# to the bottom before the popup can read it. So scroll-follow only
+# tracks mouse-wheel / keyboard scroll, not copy-mode scroll.
+scroll_follow = "off"
+
 # ── Profiles ─────────────────────────────────────────────────────────────
 # Each profile defines a `depths` list that `g` cycles through.
 # Select a profile at launch by setting FLASH_PROFILE=<name> on the
