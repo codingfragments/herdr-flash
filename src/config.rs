@@ -16,6 +16,43 @@
 
 use crate::render::{parse_hex_color, Theme};
 
+/// Initial-view scroll-follow mode: where to position the popup's
+/// cursor/viewport when it opens, relative to the source pane's scroll
+/// position.
+///
+/// - `Off` (default) — always open at the bottom of the captured text,
+///   matching the original `zellij-flash` behavior. The source pane's
+///   scroll state is ignored.
+/// - `Offset` — read the source pane's `scroll.offset_from_bottom` (via
+///   `pane.get`) and anchor the popup on the logical line that corresponds
+///   to the source viewport's bottom screen-row. Exact when nothing in the
+///   scrolled region wraps in the source; drifts upward when long lines
+///   wrap (the popup renders one unwrapped line per row, the source
+///   wraps — see PLANNING.md §11 "Data model").
+/// - `Content` — additionally read the source's current viewport text
+///   (`pane.read source=visible`) and locate it inside the capture by
+///   fingerprint-matching distinctive short lines. Sidesteps the wrap
+///   drift; falls back to `Offset` when no unique anchor is found. Most
+///   faithful to "what's on screen", but content-dependent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollFollow {
+    #[default]
+    Off,
+    Offset,
+    Content,
+}
+
+/// Parse a `scroll_follow` string: "off"/"offset"/"content" (case-insensitive).
+/// Unknown values fall back to `Off` (with a stderr warning at load time).
+pub fn parse_scroll_follow(s: &str) -> Option<ScrollFollow> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "off" | "none" | "false" => Some(ScrollFollow::Off),
+        "offset" => Some(ScrollFollow::Offset),
+        "content" => Some(ScrollFollow::Content),
+        _ => None,
+    }
+}
+
 /// Scrollback depth for a single profile entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Depth {
@@ -82,6 +119,8 @@ pub struct Config {
     pub profiles: Vec<Profile>,
     /// Index of the active profile (selected by `FLASH_PROFILE` at launch).
     pub current_profile: usize,
+    /// Initial-view scroll-follow mode (default `Off`). See [`ScrollFollow`].
+    pub scroll_follow: ScrollFollow,
 }
 
 impl Default for Config {
@@ -96,6 +135,7 @@ impl Default for Config {
                 depths: default_depths(),
             }],
             current_profile: 0,
+            scroll_follow: ScrollFollow::Off,
         }
     }
 }
@@ -195,6 +235,14 @@ fn apply_toml(config: &mut Config, root: &toml::Value) {
     }
     if let Some(v) = table.get("line_labels").and_then(toml::Value::as_str) {
         config.line_labels_unified = matches!(v.trim(), "unified" | "custom" | "true" | "on");
+    }
+    if let Some(v) = table.get("scroll_follow").and_then(toml::Value::as_str) {
+        match parse_scroll_follow(v) {
+            Some(m) => config.scroll_follow = m,
+            None => eprintln!(
+                "herdr-flash: unknown scroll_follow '{v}', using off (expected off|offset|content)"
+            ),
+        }
     }
 
     // Theme: 16 color_* roles (hex #rrggbb).
@@ -415,5 +463,28 @@ depths = []
         apply_toml(&mut config, &toml);
         // "empty" should NOT be added (empty depths); only "default" remains.
         assert!(config.profiles.iter().all(|p| p.name == "default"));
+    }
+
+    #[test]
+    fn parse_scroll_follow_values() {
+        assert_eq!(parse_scroll_follow("off"), Some(ScrollFollow::Off));
+        assert_eq!(parse_scroll_follow("OFFSET"), Some(ScrollFollow::Offset));
+        assert_eq!(parse_scroll_follow("content"), Some(ScrollFollow::Content));
+        assert_eq!(parse_scroll_follow("none"), Some(ScrollFollow::Off));
+        assert_eq!(parse_scroll_follow("garbage"), None);
+        assert_eq!(parse_scroll_follow(""), None);
+    }
+
+    #[test]
+    fn apply_toml_parses_scroll_follow() {
+        let mut config = Config::default();
+        let toml: toml::Value = toml::from_str(r#"scroll_follow = "content""#).unwrap();
+        apply_toml(&mut config, &toml);
+        assert_eq!(config.scroll_follow, ScrollFollow::Content);
+    }
+
+    #[test]
+    fn default_scroll_follow_is_off() {
+        assert_eq!(Config::default().scroll_follow, ScrollFollow::Off);
     }
 }

@@ -118,6 +118,188 @@ fn read_scrollback(
         .ok_or_else(|| "pane.read response had no \"read.text\" field".to_string())
 }
 
+// ── Source-pane scroll state (scroll-follow) ─────────────────────────────────
+
+/// The source pane's scroll position, as reported by `pane.get`'s
+/// `scroll` field (nullable in the schema, hence `Option` at the call
+/// site). All three fields are in **source screen-rows** — the unit the
+/// terminal itself uses, where a long wrapped line occupies multiple
+/// rows. The popup renders one unwrapped logical line per row, so these
+/// are only an approximation of the popup's logical-line space (see
+/// [`compute_scroll_anchor`] and PLANNING.md §11 "Data model").
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // max_offset/viewport_rows document the schema; read for diagnostics.
+struct PaneScrollInfo {
+    /// 0 = at the very bottom (showing the latest output); K > 0 = the
+    /// viewport's bottom edge is K screen-rows above the scrollback bottom.
+    offset_from_bottom: u64,
+    /// Total scrollback size in screen-rows.
+    max_offset_from_bottom: u64,
+    /// How many rows the source pane's viewport shows.
+    viewport_rows: u64,
+}
+
+/// Read the source pane's scroll state via `pane.get`.
+///
+/// Returns `Ok(None)` if the pane has no `scroll` field (the schema
+/// marks it nullable). Returns `Err` only on socket/protocol failure —
+/// a missing `scroll` is a normal "no scrollback" condition, not an
+/// error, so the caller can fall back to the bottom-anchored default.
+fn read_pane_scroll(socket_path: &str, pane_id: &str) -> Result<Option<PaneScrollInfo>, String> {
+    let result = socket_client::request(
+        socket_path,
+        "pane.get",
+        serde_json::json!({ "pane_id": pane_id }),
+    )
+    .map_err(|e| format!("pane.get failed: {e}"))?;
+    let pane = result
+        .get("pane")
+        .ok_or_else(|| "pane.get response missing \"pane\"".to_string())?;
+    let Some(scroll) = pane.get("scroll") else {
+        return Ok(None);
+    };
+    let get_u64 = |key: &str| scroll.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+    Ok(Some(PaneScrollInfo {
+        offset_from_bottom: get_u64("offset_from_bottom"),
+        max_offset_from_bottom: get_u64("max_offset_from_bottom"),
+        viewport_rows: get_u64("viewport_rows"),
+    }))
+}
+
+/// Read the source pane's current viewport text as plain lines, via
+/// `pane.read source=visible` (text format, ANSI stripped).
+///
+/// These are the **wrapped screen-rows** the user actually sees. Used by
+/// `Content` scroll-follow to fingerprint-match a distinctive line back
+/// into the unwrapped capture. Returns `Err` on socket/protocol failure.
+fn read_visible_text(socket_path: &str, pane_id: &str) -> Result<Vec<String>, String> {
+    let result = socket_client::request(
+        socket_path,
+        "pane.read",
+        serde_json::json!({
+            "pane_id": pane_id,
+            "source": "visible",
+            "format": "text",
+            "strip_ansi": true,
+        }),
+    )
+    .map_err(|e| format!("pane.read(visible) failed: {e}"))?;
+    let text = result
+        .get("read")
+        .and_then(|v| v.get("text"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "pane.read(visible) response had no \"read.text\"".to_string())?;
+    Ok(text.lines().map(String::from).collect())
+}
+
+// ── Scroll-anchor computation (scroll-follow) ───────────────────────────────
+
+/// Heuristic: is `line` distinctive enough to use as a fingerprint?
+///
+/// Skips blank/whitespace-only lines, very short lines (< 3 trimmed
+/// chars), and all-same-character lines (box-drawing separators like
+/// `───────`, repeated prompts). These would either match too many
+/// capture lines or none usefully.
+fn is_distinctive(line: &str) -> bool {
+    let t = line.trim();
+    if t.len() < 3 {
+        return false;
+    }
+    let first = t.chars().next().unwrap();
+    !t.chars().all(|c| c == first)
+}
+
+/// Find a content anchor: a capture line index that the source viewport
+/// is currently showing, by fingerprint-matching distinctive visible
+/// lines back into the unwrapped capture.
+///
+/// Scans visible lines bottom-up. For each distinctive line, finds its
+/// exact full-line matches in the capture. Returns the first (closest to
+/// the viewport bottom) line that matches **exactly once** — the most
+/// reliable anchor. If no unique match exists, falls back to the **last**
+/// occurrence of the bottommost distinctive line that matched at all
+/// (closest to the true bottom). Returns `None` if nothing matches — the
+/// caller then falls back to the offset-based anchor.
+///
+/// Why bottom-up + unique-preferred: the user's eye is at the bottom of
+/// the viewport, but a unique match anywhere in the viewport is far more
+/// trustworthy than a repeated line's ambiguous occurrence. We prefer
+/// unique, but among non-unique we keep the bottommost (nearest the eye).
+fn find_content_anchor(capture_plain: &[String], visible_plain: &[String]) -> Option<usize> {
+    let mut fallback: Option<usize> = None;
+    for vline in visible_plain.iter().rev() {
+        if !is_distinctive(vline) {
+            continue;
+        }
+        let hits: Vec<usize> = capture_plain
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| *c == vline)
+            .map(|(i, _)| i)
+            .collect();
+        if hits.is_empty() {
+            continue;
+        }
+        if hits.len() == 1 {
+            return Some(hits[0]);
+        }
+        if fallback.is_none() {
+            // Bottommost distinctive line that matched (last occurrence =
+            // closest to the scrollback bottom).
+            fallback = Some(*hits.last().unwrap());
+        }
+    }
+    fallback
+}
+
+/// Compute the initial cursor/viewport anchor line for scroll-follow.
+///
+/// Returns `(anchor_line, hint)`. `anchor_line` is a capture line index
+/// to place the cursor on and pin at the bottom of the popup viewport.
+/// `hint` is an optional footer message (e.g. when the source is
+/// scrolled above what we captured).
+///
+/// - `Off`, or no scroll info available → bottom of capture (`last`),
+///   no hint. Identical to the pre-feature behavior.
+/// - `Offset` → `last - offset_from_bottom` (clamped ≥ 0). Hint when the
+///   source viewport is entirely above the capture (`offset ≥ total`).
+/// - `Content` → fingerprint match if found; else fall back to `Offset`.
+fn compute_scroll_anchor(
+    scroll_follow: config::ScrollFollow,
+    capture_lines: usize,
+    scroll_info: Option<PaneScrollInfo>,
+    visible_plain: Option<&[String]>,
+    capture_plain: &[String],
+) -> (usize, Option<String>) {
+    let last = capture_lines.saturating_sub(1);
+    if scroll_follow == config::ScrollFollow::Off {
+        return (last, None);
+    }
+    let Some(info) = scroll_info else {
+        return (last, None);
+    };
+    let offset = info.offset_from_bottom as usize;
+
+    if scroll_follow == config::ScrollFollow::Content {
+        if let Some(vis) = visible_plain {
+            if let Some(anchor) = find_content_anchor(capture_plain, vis) {
+                return (anchor, None);
+            }
+        }
+        // No content anchor — fall through to the offset-based anchor.
+    }
+
+    // Offset mode (or content fallback). anchor = last - offset, clamped.
+    if offset >= capture_lines && capture_lines > 0 {
+        (
+            0,
+            Some("scrolled above capture — showing oldest available".to_string()),
+        )
+    } else {
+        (last.saturating_sub(offset), None)
+    }
+}
+
 // ── ANSI → styled cells ───────────────────────────────────────────────────────
 
 /// One character cell carrying its base style parsed from ANSI SGR.
@@ -291,6 +473,12 @@ struct State {
     preferred_col: usize,
     scroll_y: usize,
     scroll_x: usize,
+    /// Deferred scroll-anchor line (scroll-follow): set at launch to the
+    /// capture line the popup should pin at the bottom of its viewport.
+    /// Applied once in `run_loop` after the real terminal height is known
+    /// (so the anchor lands at the bottom row, not mid-screen), then
+    /// cleared. `None` → use the plain `scroll_y` clamp (bottom-anchored).
+    pending_scroll_anchor: Option<usize>,
     content_rows: usize,
     content_cols: usize,
     theme: Theme,
@@ -317,6 +505,7 @@ impl Default for State {
             preferred_col: 0,
             scroll_y: 0,
             scroll_x: 0,
+            pending_scroll_anchor: None,
             content_rows: 24,
             content_cols: 80,
             theme: Theme::default(),
@@ -1814,7 +2003,16 @@ fn run_loop(
         state.content_rows = terminal.size()?.height.saturating_sub(4) as usize;
         state.content_cols = terminal.size()?.width as usize;
         let max_scroll = state.lines.len().saturating_sub(state.content_rows);
-        state.scroll_y = state.scroll_y.min(max_scroll);
+        if let Some(anchor) = state.pending_scroll_anchor.take() {
+            // Pin `anchor` at the bottom of the popup viewport: top
+            // visible row = anchor - (content_rows - 1), clamped to the
+            // valid scroll range. This is the scroll-follow initial
+            // position; applied once here, then cleared.
+            let want = anchor.saturating_sub(state.content_rows.saturating_sub(1));
+            state.scroll_y = want.min(max_scroll);
+        } else {
+            state.scroll_y = state.scroll_y.min(max_scroll);
+        }
 
         terminal.draw(|f| state.render_all(f.area(), f.buffer_mut()))?;
 
@@ -2100,7 +2298,7 @@ fn main() {
 
         let mut state = State {
             lines: parse_ansi_lines(&text),
-            socket_path: Some(socket_path),
+            socket_path: Some(socket_path.clone()),
             focused_pane_id: Some(ctx.focused_pane_id.clone()),
             config,
             current_depth: 0,
@@ -2110,15 +2308,65 @@ fn main() {
             state.lines.push(Vec::new());
         }
 
-        // Start at the bottom of the captured text, matching the original.
-        // scroll_y = MAX so the first run_loop clamp brings it to max_scroll
-        // (last line at the bottom row — the lowest scroll position). We
-        // can't compute max_scroll here because the real terminal height
-        // isn't known until the first run_loop iteration.
-        let last = state.lines.len().saturating_sub(1);
-        state.cursor = (last, 0);
+        // Scroll-follow (initial view position): read the source pane's
+        // scroll state, and — in Content mode — its current viewport
+        // text, then compute where to anchor the popup. Off mode skips
+        // the extra socket calls entirely (the default). See
+        // `compute_scroll_anchor` and PLANNING.md §11.
+        let scroll_follow = state.config.scroll_follow;
+        let scroll_info = if scroll_follow != config::ScrollFollow::Off {
+            match read_pane_scroll(&socket_path, &ctx.focused_pane_id) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Non-fatal: fall back to bottom-anchored behavior.
+                    eprintln!("herdr-flash: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let visible_plain = if scroll_follow == config::ScrollFollow::Content {
+            match read_visible_text(&socket_path, &ctx.focused_pane_id) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("herdr-flash: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Content mode needs the capture as plain strings to match against.
+        let capture_plain: Vec<String> = if visible_plain.is_some() {
+            state
+                .lines
+                .iter()
+                .map(|l| styled_line_to_plain_text(l))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let (anchor_line, hint) = compute_scroll_anchor(
+            scroll_follow,
+            state.lines.len(),
+            scroll_info,
+            visible_plain.as_deref(),
+            &capture_plain,
+        );
+
+        // Place the cursor on the anchor line and defer the scroll
+        // positioning to run_loop (terminal height isn't known here).
+        // For Off mode (or no scroll info) anchor_line == last, so this
+        // is identical to the old bottom-anchored start.
+        state.cursor = (anchor_line, 0);
         state.preferred_col = 0;
-        state.scroll_y = usize::MAX;
+        state.scroll_y = usize::MAX; // clamped/overridden in run_loop
+        state.pending_scroll_anchor = Some(anchor_line);
+        if let Some(h) = hint {
+            state.message = Some(h);
+        }
 
         run(&mut state).map_err(|e| format!("terminal error: {e}"))
     })() {
@@ -2558,5 +2806,152 @@ mod tests {
         s.selection_kind = SelectionKind::Block;
         s.clamp_corners_to_lines();
         assert_eq!(s.cursor, (1, 2)); // clamped to line_len
+    }
+
+    // ── Scroll-follow anchor tests ───────────────────────────────────────
+
+    fn pinfo(offset: u64) -> Option<PaneScrollInfo> {
+        Some(PaneScrollInfo {
+            offset_from_bottom: offset,
+            max_offset_from_bottom: 1000,
+            viewport_rows: 46,
+        })
+    }
+
+    #[test]
+    fn anchor_off_returns_bottom() {
+        let (a, h) = compute_scroll_anchor(config::ScrollFollow::Off, 20, pinfo(5), None, &[]);
+        assert_eq!(a, 19);
+        assert!(h.is_none());
+    }
+
+    #[test]
+    fn anchor_off_with_no_scroll_info() {
+        let (a, _) = compute_scroll_anchor(config::ScrollFollow::Off, 20, None, None, &[]);
+        assert_eq!(a, 19);
+    }
+
+    #[test]
+    fn anchor_offset_zero_is_bottom() {
+        let (a, h) = compute_scroll_anchor(config::ScrollFollow::Offset, 20, pinfo(0), None, &[]);
+        assert_eq!(a, 19);
+        assert!(h.is_none());
+    }
+
+    #[test]
+    fn anchor_offset_scrolled_up() {
+        let (a, h) = compute_scroll_anchor(config::ScrollFollow::Offset, 20, pinfo(5), None, &[]);
+        assert_eq!(a, 14); // 19 - 5
+        assert!(h.is_none());
+    }
+
+    #[test]
+    fn anchor_offset_above_capture_clamps_to_top_with_hint() {
+        let (a, h) = compute_scroll_anchor(
+            config::ScrollFollow::Offset,
+            20,
+            pinfo(25), // offset >= total (20)
+            None,
+            &[],
+        );
+        assert_eq!(a, 0);
+        assert!(h.is_some());
+        assert!(h.unwrap().contains("scrolled above capture"));
+    }
+
+    #[test]
+    fn anchor_offset_no_scroll_info_falls_back_to_bottom() {
+        let (a, h) = compute_scroll_anchor(config::ScrollFollow::Offset, 20, None, None, &[]);
+        assert_eq!(a, 19);
+        assert!(h.is_none());
+    }
+
+    #[test]
+    fn anchor_content_unique_match_wins() {
+        let capture: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
+        // Visible viewport shows lines 3..=5 (bottom = "line 5").
+        let visible = vec!["line 3".into(), "line 4".into(), "line 5".into()];
+        let (a, h) = compute_scroll_anchor(
+            config::ScrollFollow::Content,
+            capture.len(),
+            pinfo(4),
+            Some(&visible),
+            &capture,
+        );
+        assert_eq!(a, 5); // unique match on "line 5"
+        assert!(h.is_none());
+    }
+
+    #[test]
+    fn anchor_content_falls_back_to_offset_when_no_match() {
+        let capture: Vec<String> = (0..10).map(|i| format!("line {i}")).collect();
+        // Visible has nothing in the capture.
+        let visible = vec!["not present".into(), "also absent".into()];
+        let (a, h) = compute_scroll_anchor(
+            config::ScrollFollow::Content,
+            capture.len(),
+            pinfo(3),
+            Some(&visible),
+            &capture,
+        );
+        assert_eq!(a, 6); // 9 - 3 (offset fallback)
+        assert!(h.is_none());
+    }
+
+    #[test]
+    fn anchor_content_skips_non_distinctive_lines() {
+        // Bottom of visible is a blank line and a separator — should be
+        // skipped, landing on "real content" above.
+        let capture: Vec<String> = (0..10).map(|i| format!("real content {i}")).collect();
+        let visible = vec!["real content 7".into(), "─────".into(), "".into()];
+        let (a, _) = compute_scroll_anchor(
+            config::ScrollFollow::Content,
+            capture.len(),
+            pinfo(2),
+            Some(&visible),
+            &capture,
+        );
+        assert_eq!(a, 7); // matched "real content 7", skipped separator/blank
+    }
+
+    #[test]
+    fn anchor_content_repeated_line_uses_last_occurrence() {
+        // "dup" appears at indices 2 and 7; no unique match exists, so
+        // fallback = last occurrence of the bottommost distinctive line.
+        let capture: Vec<String> = vec![
+            "dup".into(),
+            "x1".into(),
+            "dup".into(),
+            "x2".into(),
+            "dup".into(),
+        ];
+        // Visible shows only "dup" (distinctive? len 3, not all-same → yes).
+        let visible = vec!["dup".into()];
+        let (a, _) = compute_scroll_anchor(
+            config::ScrollFollow::Content,
+            capture.len(),
+            pinfo(0),
+            Some(&visible),
+            &capture,
+        );
+        // No unique match; fallback = last occurrence of "dup" = index 4.
+        assert_eq!(a, 4);
+    }
+
+    #[test]
+    fn is_distinctive_rejects_low_entropy() {
+        assert!(!is_distinctive(""));
+        assert!(!is_distinctive("   "));
+        assert!(!is_distinctive("ab")); // too short
+        assert!(!is_distinctive("──────")); // all same char
+        assert!(!is_distinctive("aaaa"));
+        assert!(is_distinctive("abc"));
+        assert!(is_distinctive("  hello world  "));
+    }
+
+    #[test]
+    fn find_content_anchor_none_when_empty() {
+        assert_eq!(find_content_anchor(&[], &[]), None);
+        assert_eq!(find_content_anchor(&["a".into()], &[]), None);
     }
 }
