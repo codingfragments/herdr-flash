@@ -7,6 +7,7 @@
 //! `Esc` closes the popup.
 
 mod config;
+mod decor;
 mod flash;
 mod render;
 mod search;
