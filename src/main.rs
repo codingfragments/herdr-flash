@@ -400,31 +400,52 @@ fn styled_lines_to_plain_text(lines: &[Vec<StyledChar>]) -> String {
 struct DecorCols {
     /// Model-column `[start, end)` spans to dim. A box rule row (the
     /// `╭··╮`/`╰··╯` frame lines, dropped entirely on copy) contributes
-    /// a single span covering the whole copied slice; other lines
-    /// contribute a prefix span (bar + padding + gutter) and/or a
-    /// suffix span (padding + right bar) as detected.
+    /// a single span covering the whole line; other lines contribute a
+    /// prefix span (bar + padding + gutter) and/or a suffix span
+    /// (padding + right bar) as detected. The render overlay intersects
+    /// these with the selection's per-line slice before dimming.
     spans: Vec<(usize, usize)>,
 }
 
-/// Translate one copied line's `decor::LineDecor` into model-column
-/// spans, given where the copied slice starts (`base`) and ends (`end`)
-/// on the model line. Prefix spans start at `base`; suffix spans end at
-/// `end` (a stream selection's first/last lines are column slices, so
-/// the copied line's own coordinate 0 maps to `base`).
-fn decor_cols_for(d: &decor::LineDecor, base: usize, end: usize) -> DecorCols {
+/// Translate one model line's `decor::LineDecor` into model-column
+/// spans. Prefix spans start at column 0; suffix spans end at the
+/// line's end.
+fn decor_cols_for(d: &decor::LineDecor, line_len: usize) -> DecorCols {
     if d.rule_row {
         return DecorCols {
-            spans: vec![(base, end)],
+            spans: vec![(0, line_len)],
         };
     }
     let mut spans = Vec::new();
     if d.prefix_cols > 0 {
-        spans.push((base, base + d.prefix_cols));
+        spans.push((0, d.prefix_cols));
     }
     if d.suffix_cols > 0 {
-        spans.push((end.saturating_sub(d.suffix_cols), end));
+        spans.push((line_len.saturating_sub(d.suffix_cols), line_len));
     }
     DecorCols { spans }
+}
+
+/// One copied slice `[start, end)` of a model line with the line's
+/// detected decoration removed: the parts of the decoration prefix
+/// `[0, prefix_cols)` and suffix `[len - suffix_cols, len)` that fall
+/// inside the slice are dropped. This is the intersection that makes
+/// mid-line anchors work — decoration is excluded exactly where it
+/// overlaps what the selection copies, nothing more.
+fn slice_without_decor(
+    line: &[StyledChar],
+    start: usize,
+    end: usize,
+    d: &decor::LineDecor,
+) -> String {
+    let len = line.len();
+    let new_start = start.max(d.prefix_cols).min(end);
+    let content_end = len.saturating_sub(d.suffix_cols);
+    let new_end = end.min(content_end).max(new_start);
+    if new_end <= new_start {
+        return String::new();
+    }
+    styled_line_to_plain_text(&line[new_start..new_end])
 }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
@@ -944,78 +965,149 @@ impl State {
 
     // ── Decoration-aware copy (feature/decoration-aware-copy) ─────────────
 
-    /// Analyze the active selection's copied text for decoration (box
-    /// frames, line-number gutters) that will be stripped on copy/insert.
-    /// Runs on exactly the lines the selection will copy — stream and
-    /// block mode both route through `selected_text` — so detection,
-    /// live dimming, and the actual strip can never disagree. Cheap
-    /// enough to call per render: it is O(selection size).
+    /// Analyze the selection's **model lines** (the full underlying lines
+    /// of the selected range — not the column slices that get copied) for
+    /// decoration that will be stripped on copy/insert.
+    ///
+    /// Detecting on the full lines is what makes mid-line anchors work:
+    /// a selection that starts on the `c` of `cd` inside a framed block
+    /// still sees the frame — the left bar it *didn't* select simply isn't
+    /// in the copied slice, while the right bar it did select is
+    /// recognized as decoration and stripped. Strip then intersects the
+    /// per-line decoration spans with what the selection actually copies,
+    /// so detection, live dimming, and the clipboard can never disagree.
+    /// Cheap enough to call per render: O(selection size).
     ///
     /// See `src/decor.rs` for the detection rules and the covered /
     /// not-covered example corpus.
     fn decor_analysis(&self) -> Option<decor::DecorAnalysis> {
-        let text = self.selected_text()?;
-        let lines: Vec<&str> = text.split('\n').collect();
-        decor::analyze(&lines)
-    }
-
-    /// The selection's text with detected decoration stripped — the
-    /// text `Enter` (copy) and `p` (insert) act on.
-    fn selected_text_stripped(&self) -> Option<String> {
-        let text = self.selected_text()?;
-        if let Some(a) = self.decor_analysis() {
-            let lines: Vec<&str> = text.split('\n').collect();
-            return Some(decor::strip(&a, &lines));
-        }
-        Some(text)
-    }
-
-    /// Map a decoration analysis back onto model coordinates for the
-    /// live dim overlay: one entry per selected model line, giving the
-    /// decoration column spans as model `[start, end)` ranges. The
-    /// analysis is indexed over *copied* lines, which line up 1:1 with
-    /// the model lines of the selection — the offsets differ: a stream
-    /// selection slices the first line at the anchor column and the
-    /// last line at the cursor column; a block selection slices every
-    /// line at the rectangle's columns.
-    fn decor_overlay_spans(&self, a: &decor::DecorAnalysis) -> Option<(usize, Vec<DecorCols>)> {
-        let mut out: Vec<DecorCols> = Vec::new();
-        let base: usize;
-
-        if self.selection_kind == SelectionKind::Block {
-            let (llo, lhi, clo, chi) = self.selection_block()?;
-            base = llo;
-            for (i, d) in a.lines.iter().enumerate() {
-                let line = llo + i;
-                if line > lhi {
-                    break;
-                }
-                let len = self.line_len(line);
-                let end = chi.saturating_add(1).min(len);
-                out.push(decor_cols_for(d, clo, end));
-            }
+        self.anchor?;
+        let (lo, hi) = if self.selection_kind == SelectionKind::Block {
+            let (llo, lhi, _, _) = self.selection_block()?;
+            (llo, lhi)
         } else {
-            let ((sl, sc), (el, ec)) = self.selection_range()?;
-            base = sl;
-            for (i, d) in a.lines.iter().enumerate() {
-                let line = sl + i;
-                if line > el {
-                    break;
-                }
-                let len = self.line_len(line);
-                // The copied line slices the model line: first copied line
-                // starts at the anchor column, last copied line ends at
-                // the cursor column (when the selection spans lines).
-                let start = if i == 0 { sc } else { 0 };
-                let end = if line == el {
-                    ec.saturating_add(1).min(len)
-                } else {
-                    len
-                };
-                out.push(decor_cols_for(d, start, end));
+            let ((sl, _), (el, _)) = self.selection_range()?;
+            (sl, el)
+        };
+        if hi < lo || hi >= self.lines.len() {
+            return None;
+        }
+        let lines: Vec<String> = (lo..=hi)
+            .map(|l| styled_line_to_plain_text(self.lines.get(l).map(|v| &v[..]).unwrap_or(&[])))
+            .collect();
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        decor::analyze(&refs)
+    }
+
+    /// The selection's text with detected decoration stripped — the text
+    /// `Enter` (copy) and `p` (insert) act on.
+    ///
+    /// The analysis ran on full model lines; each copied slice drops its
+    /// rule rows and removes the parts of its per-line decoration
+    /// prefix/suffix that fall inside the slice. A slice that starts
+    /// inside the content (mid-line anchor) keeps exactly the content it
+    /// selected; a slice covering the right bar loses it.
+    fn selected_text_stripped(&self) -> Option<String> {
+        let a = self.decor_analysis();
+        let text = self.selected_text()?;
+        let Some(a) = a else {
+            return Some(text);
+        };
+        if self.selection_kind == SelectionKind::Block {
+            return self.strip_block(&a);
+        }
+        self.strip_stream(&a)
+    }
+
+    /// Stream-mode strip: per selected model line, drop rule rows and
+    /// intersect the decoration spans with the copied slice
+    /// `[start_col, end_col)`.
+    fn strip_stream(&self, a: &decor::DecorAnalysis) -> Option<String> {
+        let ((sl, sc), (el, ec)) = self.selection_range()?;
+        let mut out: Vec<String> = Vec::new();
+        for (i, d) in a.lines.iter().enumerate() {
+            let line_idx = sl + i;
+            if line_idx > el {
+                break;
+            }
+            if d.rule_row {
+                continue;
+            }
+            let line = self.lines.get(line_idx)?;
+            let len = line.len();
+            // The copied slice: first line from the anchor column, last
+            // line to the cursor column, full lines in between.
+            let start = if i == 0 { sc.min(len) } else { 0 };
+            let end = if line_idx == el {
+                (ec + 1).min(len)
+            } else {
+                len
+            };
+            out.push(slice_without_decor(line, start, end, d));
+        }
+        Some(out.join("\n"))
+    }
+
+    /// Block-mode strip: same intersection per line with the rectangle's
+    /// columns, then rows are right-padded to the longest stripped row
+    /// so pasted columns stay aligned (the point of a block copy).
+    fn strip_block(&self, a: &decor::DecorAnalysis) -> Option<String> {
+        let (llo, lhi, clo, chi) = self.selection_block()?;
+        let mut rows: Vec<String> = Vec::new();
+        for (i, d) in a.lines.iter().enumerate() {
+            let line_idx = llo + i;
+            if line_idx > lhi {
+                break;
+            }
+            if d.rule_row {
+                continue;
+            }
+            let line = self.lines.get(line_idx)?;
+            let len = line.len();
+            if clo >= len {
+                // Rectangle starts past this line's end — a pad row in
+                // the raw copy; here an empty row, padded below.
+                rows.push(String::new());
+            } else {
+                let end = (chi + 1).min(len);
+                rows.push(slice_without_decor(line, clo, end, d));
             }
         }
-        Some((base, out))
+        let width = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0);
+        Some(
+            rows.into_iter()
+                .map(|mut r| {
+                    let pad = width - r.chars().count();
+                    r.push_str(&" ".repeat(pad));
+                    r
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+
+    /// Map the analysis onto model coordinates for the live dim overlay:
+    /// one entry per selected model line with its decoration spans in
+    /// model `[start, end)` columns. The render overlay intersects these
+    /// with the selection's per-line slice so only decoration that is
+    /// actually selected (and therefore actually stripped) dims.
+    fn decor_overlay_spans(&self, a: &decor::DecorAnalysis) -> Option<(usize, Vec<DecorCols>)> {
+        let (lo, hi) = if self.selection_kind == SelectionKind::Block {
+            let (llo, lhi, _, _) = self.selection_block()?;
+            (llo, lhi)
+        } else {
+            let ((sl, _), (el, _)) = self.selection_range()?;
+            (sl, el)
+        };
+        let mut out: Vec<DecorCols> = Vec::new();
+        for (i, d) in a.lines.iter().enumerate() {
+            let line = lo + i;
+            if line > hi {
+                break;
+            }
+            out.push(decor_cols_for(d, self.line_len(line)));
+        }
+        Some((lo, out))
     }
 
     // ── Word-jump (Phase 5) ───────────────────────────────────────────────────
@@ -1775,7 +1867,10 @@ impl State {
                 };
 
                 // Decoration spans for this line in display space
-                // (end-exclusive, clipped to the visible window).
+                // (end-exclusive). Intersected with the selection's
+                // per-line slice — only decoration that is actually
+                // selected (and therefore actually stripped on copy)
+                // dims — then clipped to the visible window.
                 let decor_ranges: Vec<(usize, usize)> = decor_spans
                     .as_ref()
                     .and_then(|(base, cols)| {
@@ -1789,7 +1884,16 @@ impl State {
                         let visible_end = scroll_x + cells.len();
                         d.spans
                             .iter()
-                            .filter_map(|&(s, e)| clip_to_display((s, e), scroll_x, visible_end))
+                            .filter_map(|&(s, e)| {
+                                // Intersect with the selected slice on
+                                // this line (logical_sel is inclusive);
+                                // no selected cells → nothing to dim.
+                                let sel = logical_sel?;
+                                let r = (s.max(sel.0), e.min(sel.1 + 1));
+                                (r.0 < r.1)
+                                    .then_some(r)
+                                    .and_then(|r| clip_to_display(r, scroll_x, visible_end))
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -3179,6 +3283,31 @@ mod tests {
     }
 
     // ── Decoration-aware copy (feature/decoration-aware-copy) ─────────
+
+    /// The user's real-world flow that motivated the model-line
+    /// analysis rework: jump to the first word inside the box (`cd`),
+    /// Space to anchor **mid-line**, extend down over the content
+    /// lines, Enter. The first copied line has no left bar, the last
+    /// ends before the right bar — under slice-based detection this
+    /// was a silent verbatim copy; on model lines the frame is visible
+    /// to the detector and exactly the selected decoration is stripped.
+    #[test]
+    fn mid_line_anchor_over_box_strips_selected_decoration() {
+        let text = "╭· fish ·······················╮\n│ cd ~/dotfiles  │\n│ set -gx R (mktemp)  │\n│ node cli.ts demo   │\n╰······················╯";
+        let mut s = state_from_text(text);
+        // Anchor on the `c` of `cd` (past the bar + padding), extend to
+        // the end of the last content line (before its right bar).
+        s.anchor = Some((1, 2));
+        s.cursor = (3, s.line_len(3) - 1);
+        assert_eq!(
+            s.selected_text_stripped(),
+            Some("cd ~/dotfiles\nset -gx R (mktemp)\nnode cli.ts demo".to_string())
+        );
+        // Verbatim (`P`) keeps exactly what was selected, bars included.
+        let raw = s.selected_text().unwrap();
+        assert!(raw.starts_with("cd ~/dotfiles  │"));
+        assert!(raw.contains('\n')); // multi-line, rule rows not selected
+    }
 
     /// The full wiring path: a stream selection over a pi-style fish
     /// box → `selected_text_stripped` returns the clean content, while

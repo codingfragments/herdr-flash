@@ -133,40 +133,35 @@ pub fn analyze(lines: &[&str]) -> Option<DecorAnalysis> {
     let indent = common_indent(lines);
 
     // ── Box detection ────────────────────────────────────────────────────────
-    // Prefer a full frame (rule rows bracketing the selection); fall back
-    // to side bars only. Both require the *same* Unicode bar char to open
-    // every non-empty content line.
-    let mut has_box = false;
-    let mut rule_rows = vec![false; n];
-    // Content line indices the box applies to.
-    let mut box_lines: Vec<usize> = Vec::new();
-    let mut bar: Option<char> = None;
-
-    let is_full_frame = n >= 3
-        && is_rule_row(skip_indent(lines[0], indent), Side::Top)
-        && is_rule_row(skip_indent(lines[n - 1], indent), Side::Bottom);
-
-    if is_full_frame {
-        let content: Vec<&str> = (1..n - 1).map(|i| skip_indent(lines[i], indent)).collect();
-        if let Some(b) = common_bar(&content) {
-            has_box = true;
-            bar = Some(b);
-            rule_rows[0] = true;
-            rule_rows[n - 1] = true;
-            box_lines = (1..n - 1).collect();
+    // A frame is recognized from *fragments*: rule rows can appear anywhere
+    // in the range (a selection may clip the top or bottom of a box), and
+    // the content lines are the rest. Requires every non-empty content
+    // line to open with the same Unicode bar. Without any rule row in
+    // range, ≥2 non-empty content lines are needed (a lone framed line is
+    // too little evidence); a rule row anywhere is frame context enough
+    // for a single content line.
+    let rule_rows: Vec<bool> = lines
+        .iter()
+        .map(|l| {
+            is_rule_row(skip_indent(l, indent), Side::Top)
+                || is_rule_row(skip_indent(l, indent), Side::Bottom)
+        })
+        .collect();
+    let content: Vec<&str> = lines
+        .iter()
+        .zip(&rule_rows)
+        .filter(|(_, rule)| !**rule)
+        .map(|(l, _)| skip_indent(l, indent))
+        .collect();
+    let bar = common_bar(&content);
+    let has_box = match bar {
+        Some(_) => {
+            let nonempty = content.iter().filter(|l| !l.trim().is_empty()).count();
+            nonempty >= 1 && (nonempty >= 2 || rule_rows.iter().any(|r| *r))
         }
-    }
-    if !has_box {
-        // Side bars only: every non-empty line in the selection opens
-        // with the same Unicode bar. Needs ≥2 non-empty lines so a lone
-        // framed line can't trigger it.
-        let all: Vec<&str> = lines.iter().map(|l| skip_indent(l, indent)).collect();
-        if let Some(b) = common_bar(&all) {
-            has_box = true;
-            bar = Some(b);
-            box_lines = (0..n).collect();
-        }
-    }
+        None => false,
+    };
+    let box_lines: Vec<usize> = (0..n).filter(|i| !rule_rows[*i]).collect();
 
     // ── Per-line box prefix/suffix ───────────────────────────────────────────
     // prefix = margin + bar + one padding space (pi-style frames pad the
@@ -209,15 +204,11 @@ pub fn analyze(lines: &[&str]) -> Option<DecorAnalysis> {
     let items: Vec<(usize, String)> = if has_box {
         box_lines
             .iter()
-            .filter_map(|&i| {
-                if rule_rows[i] {
-                    return None; // No rule rows in the box case anyway.
-                }
-                Some((i, remainder(lines[i], prefix[i], suffix[i])))
-            })
+            .map(|&i| (i, remainder(lines[i], prefix[i], suffix[i])))
             .collect()
     } else {
-        // Without a box, every line is a candidate (no rule rows exist).
+        // Without a box, every line is a candidate (no rule rows were
+        // found — that's why there's no box).
         (0..n).map(|i| (i, lines[i].to_string())).collect()
     };
     if let Some(lens) = detect_gutter(&items) {
@@ -502,6 +493,24 @@ mod tests {
     }
 
     // ── COVERED: boxes ───────────────────────────────────────────────────────
+
+    /// Partial frame: the selection clips the box — top rule row and
+    /// content, but not the bottom. Fragment detection still fires:
+    /// rule rows drop, bars strip.
+    #[test]
+    fn covered_partial_frame_top_rule_only() {
+        let text = "\
+╭────────╮
+│ clipped │
+│ frame   │";
+        assert_eq!(run(text).as_deref(), Some("clipped\nframe"));
+
+        let text = "\
+│ clipped │
+│ frame   │
+╰────────╯";
+        assert_eq!(run(text).as_deref(), Some("clipped\nframe"));
+    }
 
     /// The pi fish block from the wild — rounded corners, `·`-filler
     /// title row, `·`-filled bottom rule, `│` sides, one padding space,
