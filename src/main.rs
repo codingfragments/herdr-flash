@@ -369,6 +369,20 @@ fn styled_line_to_plain_text(line: &[StyledChar]) -> String {
     line.iter().map(|c| c.ch).collect()
 }
 
+/// Clip a model-column `[start, end)` span to the visible window and
+/// shift it into display space (relative to `scroll_x`). Returns None
+/// when the span is entirely off-screen.
+fn clip_to_display(
+    (s, e): (usize, usize),
+    scroll_x: usize,
+    visible_end: usize,
+) -> Option<(usize, usize)> {
+    if e <= scroll_x || s >= visible_end {
+        return None;
+    }
+    Some((s.max(scroll_x) - scroll_x, e.min(visible_end) - scroll_x))
+}
+
 /// Extract the full captured text as plain lines joined by `\n`.
 #[allow(dead_code)] // used from Phase 8 (copy/insert of multi-line selections)
 fn styled_lines_to_plain_text(lines: &[Vec<StyledChar>]) -> String {
@@ -377,6 +391,40 @@ fn styled_lines_to_plain_text(lines: &[Vec<StyledChar>]) -> String {
         .map(|line| styled_line_to_plain_text(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Decoration column spans for one *model* line (feature/
+/// decoration-aware-copy): which character columns are decoration,
+/// as `[start, end)` model-column ranges — used by the render overlay
+/// to dim decoration live while a selection covers it.
+struct DecorCols {
+    /// Model-column `[start, end)` spans to dim. A box rule row (the
+    /// `╭··╮`/`╰··╯` frame lines, dropped entirely on copy) contributes
+    /// a single span covering the whole copied slice; other lines
+    /// contribute a prefix span (bar + padding + gutter) and/or a
+    /// suffix span (padding + right bar) as detected.
+    spans: Vec<(usize, usize)>,
+}
+
+/// Translate one copied line's `decor::LineDecor` into model-column
+/// spans, given where the copied slice starts (`base`) and ends (`end`)
+/// on the model line. Prefix spans start at `base`; suffix spans end at
+/// `end` (a stream selection's first/last lines are column slices, so
+/// the copied line's own coordinate 0 maps to `base`).
+fn decor_cols_for(d: &decor::LineDecor, base: usize, end: usize) -> DecorCols {
+    if d.rule_row {
+        return DecorCols {
+            spans: vec![(base, end)],
+        };
+    }
+    let mut spans = Vec::new();
+    if d.prefix_cols > 0 {
+        spans.push((base, base + d.prefix_cols));
+    }
+    if d.suffix_cols > 0 {
+        spans.push((end.saturating_sub(d.suffix_cols), end));
+    }
+    DecorCols { spans }
 }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
@@ -894,6 +942,82 @@ impl State {
         Some((lines, chars))
     }
 
+    // ── Decoration-aware copy (feature/decoration-aware-copy) ─────────────
+
+    /// Analyze the active selection's copied text for decoration (box
+    /// frames, line-number gutters) that will be stripped on copy/insert.
+    /// Runs on exactly the lines the selection will copy — stream and
+    /// block mode both route through `selected_text` — so detection,
+    /// live dimming, and the actual strip can never disagree. Cheap
+    /// enough to call per render: it is O(selection size).
+    ///
+    /// See `src/decor.rs` for the detection rules and the covered /
+    /// not-covered example corpus.
+    fn decor_analysis(&self) -> Option<decor::DecorAnalysis> {
+        let text = self.selected_text()?;
+        let lines: Vec<&str> = text.split('\n').collect();
+        decor::analyze(&lines)
+    }
+
+    /// The selection's text with detected decoration stripped — the
+    /// text `Enter` (copy) and `p` (insert) act on.
+    fn selected_text_stripped(&self) -> Option<String> {
+        let text = self.selected_text()?;
+        if let Some(a) = self.decor_analysis() {
+            let lines: Vec<&str> = text.split('\n').collect();
+            return Some(decor::strip(&a, &lines));
+        }
+        Some(text)
+    }
+
+    /// Map a decoration analysis back onto model coordinates for the
+    /// live dim overlay: one entry per selected model line, giving the
+    /// decoration column spans as model `[start, end)` ranges. The
+    /// analysis is indexed over *copied* lines, which line up 1:1 with
+    /// the model lines of the selection — the offsets differ: a stream
+    /// selection slices the first line at the anchor column and the
+    /// last line at the cursor column; a block selection slices every
+    /// line at the rectangle's columns.
+    fn decor_overlay_spans(&self, a: &decor::DecorAnalysis) -> Option<(usize, Vec<DecorCols>)> {
+        let mut out: Vec<DecorCols> = Vec::new();
+        let base: usize;
+
+        if self.selection_kind == SelectionKind::Block {
+            let (llo, lhi, clo, chi) = self.selection_block()?;
+            base = llo;
+            for (i, d) in a.lines.iter().enumerate() {
+                let line = llo + i;
+                if line > lhi {
+                    break;
+                }
+                let len = self.line_len(line);
+                let end = chi.saturating_add(1).min(len);
+                out.push(decor_cols_for(d, clo, end));
+            }
+        } else {
+            let ((sl, sc), (el, ec)) = self.selection_range()?;
+            base = sl;
+            for (i, d) in a.lines.iter().enumerate() {
+                let line = sl + i;
+                if line > el {
+                    break;
+                }
+                let len = self.line_len(line);
+                // The copied line slices the model line: first copied line
+                // starts at the anchor column, last copied line ends at
+                // the cursor column (when the selection spans lines).
+                let start = if i == 0 { sc } else { 0 };
+                let end = if line == el {
+                    ec.saturating_add(1).min(len)
+                } else {
+                    len
+                };
+                out.push(decor_cols_for(d, start, end));
+            }
+        }
+        Some((base, out))
+    }
+
     // ── Word-jump (Phase 5) ───────────────────────────────────────────────────
 
     /// Jump the cursor to `(line, col)` and recenter the viewport.
@@ -1125,28 +1249,59 @@ impl State {
     // clipboard or the target pane (the conversion contract from the
     // ANSI-color data model).
 
-    /// `Enter` — copy the selection to the clipboard via `arboard` and
-    /// close the popup. Warn (footer message, stay open) if there's no
-    /// selection. Returns `true` to stay open, `false` to close.
+    /// `Enter` — copy the selection to the clipboard via `arboard`
+    /// (with detected decoration — box frames, number gutters —
+    /// stripped) and close the popup. `P` copies the same selection
+    /// verbatim (`action_copy_raw`). Warn (footer message, stay open) if
+    /// there's no selection. Returns `true` to stay open, `false` to
+    /// close.
     fn action_copy(&mut self) -> bool {
-        match self.selected_text() {
-            Some(text) => {
-                match arboard::Clipboard::new() {
-                    Ok(mut cb) => {
-                        if let Err(e) = cb.set_text(&text) {
-                            self.message = Some(format!("Clipboard error: {e}"));
-                            return true;
-                        }
-                        false // close the popup
-                    }
-                    Err(e) => {
-                        self.message = Some(format!("Clipboard unavailable: {e}"));
-                        true
-                    }
-                }
-            }
+        let text = match self.selected_text_stripped() {
+            Some(text) => text,
             None => {
                 self.message = Some("No selection — press Space to anchor".to_string());
+                return true;
+            }
+        };
+        match arboard::Clipboard::new() {
+            Ok(mut cb) => {
+                if let Err(e) = cb.set_text(&text) {
+                    self.message = Some(format!("Clipboard error: {e}"));
+                    return true;
+                }
+                false // close the popup
+            }
+            Err(e) => {
+                self.message = Some(format!("Clipboard unavailable: {e}"));
+                true
+            }
+        }
+    }
+
+    /// `P` — copy the selection **verbatim**: whatever the decoration
+    /// detector would strip (box frame, line numbers) stays in the
+    /// clipboard. The escape hatch for the rare case the detection is
+    /// wrong (ASCII art, a mermaid node that *is* the content) or the
+    /// framed text is what you actually wanted. Bound next to `p`
+    /// (insert) on purpose: `p`/`P` are the two pane-facing verbs.
+    fn action_copy_raw(&mut self) -> bool {
+        let text = match self.selected_text() {
+            Some(text) => text,
+            None => {
+                self.message = Some("No selection — press Space to anchor".to_string());
+                return true;
+            }
+        };
+        match arboard::Clipboard::new() {
+            Ok(mut cb) => {
+                if let Err(e) = cb.set_text(&text) {
+                    self.message = Some(format!("Clipboard error: {e}"));
+                    return true;
+                }
+                false
+            }
+            Err(e) => {
+                self.message = Some(format!("Clipboard unavailable: {e}"));
                 true
             }
         }
@@ -1161,7 +1316,11 @@ impl State {
     /// indistinguishable from plain Enter in legacy keyboard mode — most
     /// terminals send the same bytes for both. `p` = paste into pane.)
     fn action_insert(&mut self) -> bool {
-        let Some(text) = self.selected_text() else {
+        // Insert acts on the stripped text too — copying a command out
+        // of a framed block and typing it into the shell both want the
+        // clean form. `P` covers verbatim; there is no verbatim-insert
+        // (type it via the clipboard if ever needed).
+        let Some(text) = self.selected_text_stripped() else {
             self.message = Some("No selection — press Space to anchor".to_string());
             return true;
         };
@@ -1393,6 +1552,14 @@ impl State {
         };
         let sel_block = self.selection_block();
 
+        // Decoration overlay (feature/decoration-aware-copy): the
+        // analysis of the selection's copied text, mapped back onto model
+        // lines/columns. Per visible line the spans shift into display
+        // space inside the map below, the same way selection ranges do.
+        let decor_spans = self
+            .decor_analysis()
+            .and_then(|a| self.decor_overlay_spans(&a));
+
         // Jump overlay data (Phase 5): extract from Mode::Jump once for
         // the viewport. Per-line labels/partials are filtered inside the
         // map and shifted to display space.
@@ -1607,6 +1774,29 @@ impl State {
                     query_len: search_qlen,
                 };
 
+                // Decoration spans for this line in display space
+                // (end-exclusive, clipped to the visible window).
+                let decor_ranges: Vec<(usize, usize)> = decor_spans
+                    .as_ref()
+                    .and_then(|(base, cols)| {
+                        if abs >= *base {
+                            cols.get(abs - base)
+                        } else {
+                            None
+                        }
+                    })
+                    .map(|d| {
+                        let visible_end = scroll_x + cells.len();
+                        d.spans
+                            .iter()
+                            .filter_map(|&(s, e)| clip_to_display((s, e), scroll_x, visible_end))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let decor = render::DecorOverlay {
+                    ranges: decor_ranges,
+                };
+
                 let mut spans = vec![gutter];
                 if has_left_overflow {
                     spans.push(Span::styled(
@@ -1621,6 +1811,7 @@ impl State {
                     sel_pad,
                     jump,
                     search,
+                    decor,
                     &self.theme,
                 ));
                 if has_right_overflow {
@@ -1669,6 +1860,26 @@ impl State {
                 label,
                 Style::default().fg(self.theme.sel_indicator),
             ));
+        }
+        // Decoration-aware copy (feature/decoration-aware-copy): name
+        // what will be stripped while the selection is being built, and
+        // point at the verbatim escape hatch. The hint is the feedback
+        // channel — dimmed cells in the content are the other half.
+        if let Some(a) = self.decor_analysis() {
+            line1_spans.push(Span::raw("  "));
+            line1_spans.push(Span::styled(
+                format!(
+                    "stripping {} → {} lines",
+                    a.label(),
+                    a.stripped_line_count()
+                ),
+                Style::default()
+                    .fg(self.theme.decoration_dim)
+                    .add_modifier(Modifier::DIM),
+            ));
+            line1_spans.push(Span::raw("  "));
+            line1_spans.push(Span::styled("P", bold));
+            line1_spans.push(Span::raw(":raw"));
         }
         let line1 = Line::from(line1_spans);
 
@@ -1855,8 +2066,9 @@ impl State {
                 ("/", "search"),
                 ("Space", "toggle selection anchor"),
                 ("v", "toggle stream / block selection"),
-                ("Enter", "copy to clipboard"),
-                ("p", "insert into pane"),
+                ("Enter", "copy (frame/numbers stripped)"),
+                ("P", "copy raw (keep frame/numbers)"),
+                ("p", "insert into pane (stripped)"),
                 ("g", "cycle scrollback depth"),
                 ("?", "this help"),
                 ("Esc", "clear selection / close"),
@@ -2255,6 +2467,16 @@ fn run_loop(
             // (vim-style), always works.
             KeyCode::Char('p') => {
                 if state.action_insert() {
+                    continue;
+                }
+                break;
+            }
+            // `P` (Shift-p) — copy the selection verbatim: the decoration
+            // strip that `Enter` applies is skipped (box frames, line
+            // numbers stay). Sibling of `p` (insert); both act on the
+            // selection, neither enters a mode.
+            KeyCode::Char('P') => {
+                if state.action_copy_raw() {
                     continue;
                 }
                 break;
@@ -2954,5 +3176,138 @@ mod tests {
     fn find_content_anchor_none_when_empty() {
         assert_eq!(find_content_anchor(&[], &[]), None);
         assert_eq!(find_content_anchor(&["a".into()], &[]), None);
+    }
+
+    // ── Decoration-aware copy (feature/decoration-aware-copy) ─────────
+
+    /// The full wiring path: a stream selection over a pi-style fish
+    /// box → `selected_text_stripped` returns the clean content, while
+    /// `selected_text` (the `P` raw path) keeps the frame.
+    #[test]
+    fn stripped_copy_removes_fish_box() {
+        let text =
+            "╭· fish ········╮\n│   cd ~/dotfiles  │\n│   git checkout   │\n╰················╯";
+        let mut s = state_from_text(text);
+        s.anchor = Some((0, 0));
+        s.cursor = (3, s.line_len(3) - 1);
+        assert_eq!(
+            s.selected_text_stripped(),
+            Some("  cd ~/dotfiles\n  git checkout".to_string())
+        );
+        // Raw path keeps everything verbatim.
+        let raw = s.selected_text().unwrap();
+        assert!(raw.starts_with('╭'));
+        assert!(raw.ends_with('╯'));
+        // The live-feedback analysis reports what the footer will say.
+        let a = s.decor_analysis().unwrap();
+        assert_eq!(a.label(), "box");
+        assert_eq!(a.stripped_line_count(), 2);
+    }
+
+    /// No decoration → stripped == verbatim (the common case must be a
+    /// no-op, byte for byte).
+    #[test]
+    fn stripped_copy_is_identity_on_plain_text() {
+        let mut s = state_from_text("foo bar\nbaz qux");
+        s.anchor = Some((0, 0));
+        s.cursor = (1, 6);
+        assert_eq!(s.selected_text(), s.selected_text_stripped());
+        assert!(s.decor_analysis().is_none());
+    }
+
+    /// Insert acts on the stripped text too: a gutter selection
+    /// inserted into the pane carries no `N │` prefixes.
+    #[test]
+    fn stripped_gutter_selection_for_insert() {
+        let text = "   1 │ cd ~/x\n   2 │ git pull";
+        let mut s = state_from_text(text);
+        s.anchor = Some((0, 0));
+        s.cursor = (1, s.line_len(1) - 1);
+        assert_eq!(
+            s.selected_text_stripped(),
+            Some("cd ~/x\ngit pull".to_string())
+        );
+    }
+
+    /// The overlay spans map the analysis back onto model coordinates:
+    /// rule rows dim whole lines, content lines dim bar+padding prefix
+    /// and padding+bar suffix. Checked for the line-jump/anchor case
+    /// where the selection starts at column 0.
+    #[test]
+    fn decor_overlay_spans_map_to_model_lines() {
+        let text = "╭────╮\n│ ab │\n╰────╯";
+        let mut s = state_from_text(text);
+        s.anchor = Some((0, 0));
+        s.cursor = (2, s.line_len(2) - 1);
+        let a = s.decor_analysis().unwrap();
+        let (base, cols) = s.decor_overlay_spans(&a).unwrap();
+        assert_eq!(base, 0);
+        assert_eq!(cols.len(), 3);
+        // Rule rows: whole line.
+        assert_eq!(cols[0].spans, vec![(0, 6)]);
+        assert_eq!(cols[2].spans, vec![(0, 6)]);
+        // Content line: bar+pad prefix, pad+bar suffix (the padding
+        // spaces next to the bars dim with them).
+        assert_eq!(cols[1].spans, vec![(0, 2), (4, 6)]);
+    }
+
+    /// Block selections strip too: a rectangle over the content column
+    /// of a box, cutting through the frame, still yields the clean
+    /// content slice.
+    #[test]
+    fn block_selection_over_box_strips() {
+        let text = "╭────╮\n│ ab │\n│ cd │\n╰────╯";
+        let mut s = state_from_text(text);
+        s.selection_kind = SelectionKind::Block;
+        s.anchor = Some((0, 0));
+        s.cursor = (3, 5);
+        assert_eq!(s.selected_text_stripped(), Some("ab\ncd".to_string()));
+    }
+
+    /// Fixture-driven end-to-end check: the shipped manual-test
+    /// fixtures (`fixtures/short.txt`, `fixtures/long.txt`) must detect
+    /// and strip their first pi-style fish box — the same content a
+    /// real pane scrollback will carry. Guards the fixtures and the
+    /// detector against each other drifting.
+    #[test]
+    fn fixtures_detect_and_strip_their_fish_boxes() {
+        for file in ["short", "long"] {
+            let path = format!("{}/fixtures/{file}.txt", env!("CARGO_MANIFEST_DIR"));
+            let text =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let all: Vec<&str> = text.split('\n').collect();
+
+            // The first full fish box in the file: from the `╭· fish`
+            // rule row to the next `╰` rule row.
+            let start = all
+                .iter()
+                .position(|l| l.starts_with("╭· fish"))
+                .unwrap_or_else(|| panic!("{file}: no fish box"));
+            let end = (start + 1..)
+                .find(|&i| all[i].starts_with('╰'))
+                .unwrap_or_else(|| panic!("{file}: no bottom rule"));
+            let lines: Vec<&str> = all[start..=end].to_vec();
+
+            let a =
+                decor::analyze(&lines).unwrap_or_else(|| panic!("{file}: fish box not detected"));
+            assert!(a.has_box, "{file}: has_box");
+            let stripped = decor::strip(&a, &lines);
+            assert!(
+                stripped.starts_with("cd ~/.dotfiles"),
+                "{file}: stripped content wrong: {stripped:?}"
+            );
+            assert!(!stripped.contains('│'), "{file}: bars survived");
+            assert!(!stripped.contains('╰'), "{file}: rule row survived");
+
+            // The markdown-table block (short.txt) must NOT trigger
+            // detection. long.txt ships no table — skip there.
+            if let Some(tbl) = all.iter().position(|l| l.starts_with("| key")) {
+                let table: Vec<&str> = all[tbl..tbl + 3].to_vec();
+                assert!(
+                    decor::analyze(&table).is_none(),
+                    "{file}: table misdetected as decoration"
+                );
+            }
+        }
     }
 }

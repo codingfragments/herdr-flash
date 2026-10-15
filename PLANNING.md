@@ -883,7 +883,39 @@ confirmed in the Phase 1 / Phase 2 spikes.
 
 ## 13. Ideas beyond parity
 
-(Not for v1 — recorded so they aren't lost.)
+(Beyond-parity features, shipped or recorded. Shipped ones carry a
+**feature note** with the settled design decisions.)
+
+- **Decoration-aware copy** *(shipped on `feature/decoration-aware-copy`;
+  detector `src/decor.rs`, fixtures `fixtures/`)* — selections that cover
+  decorated scrollback content (pi-style rounded `╭· fish ···╮` command
+  blocks, `bat`/`cat -n`/`grep -n`/`rg` line-number gutters) copy the
+  decoration verbatim, which is almost never what the user wanted.
+  Settled decisions:
+  - Detection is **per-selection**, on the exact lines the selection will
+    copy — detection, live dimming and the strip can never disagree.
+  - **Live feedback**: while an anchor is set, detected decoration cells
+    dim (new `color_decoration_dim` theme role, Catppuccin Macchiato
+    `#5b6078` default) and the footer names what will be stripped
+    (`stripping box+numbers → N lines · P raw`). The decoration overlay
+    sits *above* the selection overlay deliberately — decoration only
+    exists inside a selection, so a selection-styled decoration cell
+    would never dim, and the dim is the feedback.
+  - `Enter` (copy) and `p` (insert) strip automatically; **`P`** copies
+    the selection verbatim — the escape hatch for the known
+    false-positive territory (mermaid/Unicode art that legitimately *is*
+    a box, ASCII frames excluded instead: `+--+` collides with tables
+    and art far more often than it frames).
+  - Gutter counters must be **strictly increasing** across the selected
+    non-empty lines; rg-style `path:N:` prefixes must be identical and
+    path-like (`/` or `.`) — these two rules keep code that merely
+    starts with `12:` and `host:8080:` log lines verbatim.
+  - Strip is conservative: rule rows drop, bar + one padding space +
+    trailing padding/right bar drop, gutter prefix drops; content
+    indentation is kept (de-indent recorded below as a follow-up).
+  - Follow-ups recorded: de-indent of boxed content, git-diff `@@`
+    hunk headers + `+/-` prefixes, compiler `-->` locations, per-class
+    config toggles.
 
 - Mouse-assisted selection (see open question above) as an alternative to
   pure keyboard flash-jump, if Herdr's mouse support extends cleanly to

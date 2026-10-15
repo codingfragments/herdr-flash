@@ -29,9 +29,8 @@ pub fn parse_hex_color(s: &str) -> Option<Color> {
     Some(Color::Rgb(r, g, b))
 }
 
-/// Runtime color theme. Defaults to Catppuccin Macchiato. All 16 fields
-/// will be overridable via `color_*` keys in `config.toml` (Phase 9);
-/// for now they're hardcoded.
+/// Runtime color theme. Defaults to Catppuccin Macchiato. All 17 fields
+/// are overridable via `color_*` keys in `config.toml`.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -51,6 +50,10 @@ pub struct Theme {
     pub search_match_bg: Color,
     pub search_current_bg: Color,
     pub search_fg: Color,
+    /// Detected copy decoration (box frames, line-number gutters) that
+    /// will be stripped on copy — dimmed live while a selection covers
+    /// it (`feature/decoration-aware-copy`).
+    pub decoration_dim: Color,
 }
 
 impl Default for Theme {
@@ -83,6 +86,7 @@ impl Default for Theme {
             search_match_bg: green,
             search_current_bg: yellow,
             search_fg: base,
+            decoration_dim: Color::Rgb(91, 96, 120), // #5b6078
         }
     }
 }
@@ -149,6 +153,16 @@ pub struct SearchOverlay<'a> {
     pub query_len: usize,
 }
 
+/// Detected copy decoration (box frame cells, number-gutter cells, rule
+/// rows) for one line, in **display-space** `[start, end)` column
+/// ranges. Dimmed live while a selection covers decoration so the user
+/// sees what will be stripped on copy (`feature/decoration-aware-copy`).
+#[derive(Default)]
+pub struct DecorOverlay {
+    /// Column ranges (display space, end-exclusive) to dim out.
+    pub ranges: Vec<(usize, usize)>,
+}
+
 /// Build ratatui spans for one line of content.
 ///
 /// Cells carry a base `Style` parsed from ANSI SGR escapes. The overlay
@@ -166,8 +180,13 @@ pub struct SearchOverlay<'a> {
 ///   4. Cursor → cursor style (inverted)
 ///   5. Current search match → search-current style (yellow bg, bold);
 ///      non-current search match → search style (green bg)
-///   6. Selection → selection style (blue bg)
-///   7. Base ANSI style from the parsed cell
+///   6. Decoration → decoration style (dim fg) — detected box frame /
+///      number-gutter cells that will be stripped on copy. Above the
+///      selection deliberately: decoration only ever exists *inside* an
+///      active selection, so a selection-colored decoration cell would
+///      never dim — the dim IS the live feedback.
+///   7. Selection → selection style (blue bg)
+///   8. Base ANSI style from the parsed cell
 ///
 /// `cells`: the visible slice of the line (after horizontal scroll),
 /// each carrying its base style.
@@ -179,6 +198,11 @@ pub struct SearchOverlay<'a> {
 /// short lines). 0 in stream mode.
 /// `jump`: jump overlay data for this line (empty when not in Jump mode).
 /// `search`: search overlay data for this line (empty when not in Search mode).
+/// `decor`: decoration ranges for this line (empty when nothing detected).
+//
+// 8 args, all per-line render inputs of the same rank; bundling them
+// into a params struct would churn every caller for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 pub fn build_line_spans(
     cells: &[crate::StyledChar],
     cursor_col: Option<usize>,
@@ -186,6 +210,7 @@ pub fn build_line_spans(
     sel_pad: usize,
     jump: JumpOverlay,
     search: SearchOverlay,
+    decor: DecorOverlay,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     let cursor_style = Style::default().bg(theme.cursor_bg).fg(theme.cursor_fg);
@@ -207,6 +232,9 @@ pub fn build_line_spans(
         .bg(theme.search_current_bg)
         .fg(theme.search_fg)
         .add_modifier(Modifier::BOLD);
+    let decor_style = Style::default()
+        .fg(theme.decoration_dim)
+        .add_modifier(Modifier::DIM);
 
     let mut styled: Vec<(char, Style)> = cells
         .iter()
@@ -253,13 +281,20 @@ pub fn build_line_spans(
                     }
                 }
             }
-            // 6. Selection.
+            // 6. Decoration — detected copy decoration (box frame cells,
+            // number-gutter cells). Deliberately above the selection: the
+            // decoration only exists inside an active selection, so the
+            // dim IS the live "this will be stripped" feedback.
+            if decor.ranges.iter().any(|&(s, e)| i >= s && i < e) {
+                return (cell.ch, decor_style);
+            }
+            // 7. Selection.
             if let Some((s, e)) = sel_range {
                 if i >= s && i <= e {
                     return (cell.ch, sel_style);
                 }
             }
-            // 7. Base ANSI style.
+            // 8. Base ANSI style.
             (cell.ch, cell.style)
         })
         .collect();
