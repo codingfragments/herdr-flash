@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-15
+
+### Added
+
+- **Decoration-aware copy** — selections that cover decorated scrollback
+  content now copy the *text*, not the decoration around it. What's
+  detected while you select (live, with feedback):
+  - **Box frames** — the enclosing boxes terminal UIs render around
+    text (pi's rounded `╭· fish ···╮` command blocks, light/heavy/double
+    frames, `·`-filler title rows, side bars, indented frames, content
+    lines longer than the frame, partially clipped frames).
+  - **Line-number gutters** — `bat`'s `   1 │ `, `cat -n`, `grep -n` /
+    `rg`'s `12:` and `src/file.rs:12:` forms.
+  - **Live feedback during selection** — detected decoration cells dim
+    (new `color_decoration_dim` theme role, Catppuccin Macchiato
+    `#5b6078` default, overridable in `config.toml` like every other
+    role) and the footer names what will be stripped: `stripping
+    box+numbers → N lines · P raw`.
+  - **Zero extra keystrokes** — `Enter` (copy) and `p` (insert) act on
+    the stripped text automatically. **`P`** (new) copies the selection
+    verbatim when the framed text *is* what you wanted (ASCII art,
+    mermaid diagrams, or genuinely wanting the frame).
+  - Detection runs on the selection's underlying lines and strips only
+    the decoration inside what you actually selected — so anchoring
+    mid-line (e.g. jumping to the first word inside a box, then
+    extending) works exactly like selecting the whole box.
+  - Stream *and* block (`v`) selections both strip; block rows stay
+    column-aligned after stripping.
+  - Deliberately conservative: ASCII frames (`+--+`, markdown tables)
+    are never treated as decoration, gutter counters must be strictly
+    increasing, and path-prefixed gutters must look like paths — code
+    that merely starts with `12:` or `host:8080:` copies verbatim.
+- **Manual-test fixtures** (`fixtures/short.txt`, `fixtures/long.txt`
+  + README with the test script and expectation table) — every covered
+  and not-covered shape including the full pi fish block, pinned by an
+  automated fixture-driven test.
+
+### Changed
+
+- The in-popup `?` help now lists `P` (copy raw) and notes that
+  `Enter`/`p` strip frame/number decoration.
+
 ## [0.2.1] - 2026-08-26
 
 ### Added
