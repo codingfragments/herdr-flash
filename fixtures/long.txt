@@ -1,0 +1,102 @@
+── herdr-flash decoration fixtures (long) ──
+NOTE: cat this in a pane at least 90 columns wide, or the boxes wrap
+(wrapped frames legitimately do not detect).
+
+1) The full pi fish block (rounded, · filler, blank line, long lines):
+╭· fish ··············································································╮
+│ cd ~/.dotfiles/dotSrc/app_coding_agents/.pi/development/extensions/codingfragments  │
+│ git checkout feat/demo-recording-s5-annotation-render                               │
+│                                                                                     │
+│ # 1. Temp workspace (nothing under ~/DemoRecordings is touched)                     │
+│ set -gx R (mktemp -d)                                                               │
+│ echo '{}' > $R/none.json                                                            │
+│ set -gx DEMO_REC_ROOT $R                                                            │
+│ set -gx DEMO_REC_CONFIG $R/none.json                                                │
+│ set -gx DEMO_REC_NO_OPEN 1                                                          │
+│ set -gx DEMO_REC_TTS_CHAIN say                                                      │
+│                                                                                     │
+│ # 2. Record the fixture, write and voice the narration, sync-edit (~1 min)          │
+│ node extensions/demo-recording/cli.ts fixture-demo                                  │
+│                                                                                     │
+│ # 3. Add the example annotations and check how they resolve                         │
+│ node extensions/demo-recording/cli.ts annotate add --project fixture-demo \         │
+│      --file extensions/demo-recording/fixtures/annotations/s3-human.json            │
+│ node extensions/demo-recording/cli.ts annotate check --project fixture-demo         │
+│                                                                                     │
+│ # 4. Render with the annotations burned in (~20 s)                                  │
+│ node extensions/demo-recording/cli.ts render --project fixture-demo --annotations 1 │
+│                                                                                     │
+│ # 5. Watch it                                                                       │
+│ open $R/projects/fixture-demo/out/edit-v1/neutral+a1/full.mp4                       │
+╰·····················································································╯
+
+2) Long bat gutter (30 lines):
+  1 │ scrollback line 1 — payload text for gutter testing
+  2 │ scrollback line 2 — payload text for gutter testing
+  3 │ scrollback line 3 — payload text for gutter testing
+  4 │ scrollback line 4 — payload text for gutter testing
+  5 │ scrollback line 5 — payload text for gutter testing
+  6 │ scrollback line 6 — payload text for gutter testing
+  7 │ scrollback line 7 — payload text for gutter testing
+  8 │ scrollback line 8 — payload text for gutter testing
+  9 │ scrollback line 9 — payload text for gutter testing
+ 10 │ scrollback line 10 — payload text for gutter testing
+ 11 │ scrollback line 11 — payload text for gutter testing
+ 12 │ scrollback line 12 — payload text for gutter testing
+ 13 │ scrollback line 13 — payload text for gutter testing
+ 14 │ scrollback line 14 — payload text for gutter testing
+ 15 │ scrollback line 15 — payload text for gutter testing
+ 16 │ scrollback line 16 — payload text for gutter testing
+ 17 │ scrollback line 17 — payload text for gutter testing
+ 18 │ scrollback line 18 — payload text for gutter testing
+ 19 │ scrollback line 19 — payload text for gutter testing
+ 20 │ scrollback line 20 — payload text for gutter testing
+ 21 │ scrollback line 21 — payload text for gutter testing
+ 22 │ scrollback line 22 — payload text for gutter testing
+ 23 │ scrollback line 23 — payload text for gutter testing
+ 24 │ scrollback line 24 — payload text for gutter testing
+ 25 │ scrollback line 25 — payload text for gutter testing
+ 26 │ scrollback line 26 — payload text for gutter testing
+ 27 │ scrollback line 27 — payload text for gutter testing
+ 28 │ scrollback line 28 — payload text for gutter testing
+ 29 │ scrollback line 29 — payload text for gutter testing
+ 30 │ scrollback line 30 — payload text for gutter testing
+
+3) rg multi-file (path prefix):
+src/main.rs:12:fn main() {
+src/main.rs:13:    println!("hi");
+src/main.rs:14:}
+src/render.rs:202:pub fn build_line_spans(
+src/render.rs:203:    cells: &[crate::StyledChar],
+
+4) Boxed + numbered (both classes at once):
+╭· numbered ··╮
+│   1 │ alpha │
+│   2 │ beta  │
+│   3 │ gamma │
+╰·············╯
+
+5) Other frame styles (light / heavy / double):
+┌·············┐
+│ light frame │
+└·············┘
+
+┏·············┓
+┃ heavy frame ┃
+┗·············┛
+
+╔··············╗
+║ double frame ║
+╚··············╝
+
+6) Side bars only (no rule rows in the selection):
+│ alpha │
+│ beta  │
+│ gamma │
+
+7) Must NOT strip:
+host:8080:/a
+host:8081:/b
++--------+
+|  art   |
++--------+

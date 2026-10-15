@@ -4,7 +4,7 @@
 //! launch. Three layers, mirroring the sister `herdr-zextract` port:
 //!
 //! - **Global** (top-level): `log_level`, `labels` (word-jump charset),
-//!   `line_labels` (`directional`/`unified`), and the 16 `color_*` theme
+//!   `line_labels` (`directional`/`unified`), and the 17 `color_*` theme
 //!   roles (hex `#rrggbb`, Catppuccin Macchiato defaults).
 //! - **Per-keybind profiles** (`[profiles.<name>]`): `depths` — the
 //!   scrollback-depth cycle list for `g`. Selected at launch by
@@ -113,7 +113,7 @@ pub struct Config {
     /// Line-jump scheme: false = directional (a-z below, A-Z above),
     /// true = unified (split `labels` in half).
     pub line_labels_unified: bool,
-    /// Theme (16 color roles, Catppuccin Macchiato defaults).
+    /// Theme (17 color roles, Catppuccin Macchiato defaults).
     pub theme: Theme,
     /// Named profiles, selected at launch by `FLASH_PROFILE`.
     pub profiles: Vec<Profile>,
@@ -245,7 +245,7 @@ fn apply_toml(config: &mut Config, root: &toml::Value) {
         }
     }
 
-    // Theme: 16 color_* roles (hex #rrggbb).
+    // Theme: 17 color_* roles (hex #rrggbb).
     apply_color(table, "color_sel_bg", &mut config.theme.sel_bg);
     apply_color(table, "color_sel_fg", &mut config.theme.sel_fg);
     apply_color(table, "color_cursor_bg", &mut config.theme.cursor_bg);
@@ -286,6 +286,11 @@ fn apply_toml(config: &mut Config, root: &toml::Value) {
         &mut config.theme.search_current_bg,
     );
     apply_color(table, "color_search_fg", &mut config.theme.search_fg);
+    apply_color(
+        table,
+        "color_decoration_dim",
+        &mut config.theme.decoration_dim,
+    );
 
     // Profiles: [profiles.<name>] with depths = [...].
     if let Some(toml::Value::Table(profiles)) = table.get("profiles") {

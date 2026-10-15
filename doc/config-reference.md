@@ -101,6 +101,11 @@ color_jump_partial_fg = "#eed49f"
 color_search_match_bg = "#a6da95"
 color_search_current_bg = "#eed49f"
 color_search_fg = "#24273a"
+
+# Decoration-aware copy: detected box frames / line-number gutters dim
+# with this color while a selection covers them (stripped on Enter/p;
+# P copies raw)
+color_decoration_dim = "#5b6078"
 ```
 
 ---

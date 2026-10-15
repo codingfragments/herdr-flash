@@ -31,6 +31,13 @@ but it's already scrolled off:
 5. Press `Enter` to copy to the clipboard. The popup closes.
 6. Paste (`Cmd-V` / `Ctrl-Shift-V`) wherever you need it.
 
+If the copied text sat inside a rendered box (e.g. a `╭─╮` framed
+command block) or carried line-number prefixes (`  1 │ `, `12:`),
+herdr-flash detects that decoration while you select — the frame and
+numbers dim, the footer names what will be stripped — and `Enter`
+copies the clean text. `P` copies the selection verbatim instead
+(keep the frame/numbers).
+
 ---
 
 ## Grab a block of output for a ticket
@@ -88,7 +95,8 @@ You need to find something from 5000 lines ago:
 3. `n`/`N` to cycle through matches with wrap; the viewport
    re-centres on each jump.
 4. `Space` to anchor at the match, then extend with motions or jump.
-5. `Enter` to copy or `p` to insert.
+5. `Enter` to copy or `p` to insert (both strip detected box
+   frames / line-number gutters; `P` copies raw).
 
 ---
 

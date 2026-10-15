@@ -1,0 +1,31 @@
+── herdr-flash decoration fixtures (short) ──
+
+1) Rounded pi-style box: select ALL 5 box lines -> footer 'stripping box',
+   frame+numbers dim, Enter copies clean, P copies raw.
+╭· fish ··································╮
+│ cd ~/.dotfiles/dotSrc/app_coding_agents │
+│ set -gx R (mktemp -d)                   │
+│ node cli.ts fixture-demo                │
+╰·········································╯
+
+2) bat gutter: select all 3 -> 'stripping numbers'.
+  1 │ #!/usr/bin/env fish
+  2 │ set -gx R (mktemp -d)
+  3 │ node cli.ts fixture-demo
+
+3) grep -n (counter may jump):
+12:set -gx R (mktemp -d)
+13:echo '{}' > $R/none.json
+40:node cli.ts fixture-demo
+
+4) Must NOT strip - markdown table (select it -> no hint, copy verbatim):
+| key  | value        |
+|------|--------------|
+| R    | mktemp -d    |
+| DEMO | fixture-demo |
+
+5) Known false positive - a mermaid node IS a box: detection fires,
+   P is the escape hatch for the raw copy.
+╭───────╮
+│ Start │
+╰───┬───╯

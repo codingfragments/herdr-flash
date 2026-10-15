@@ -21,7 +21,11 @@ or insert it directly into the source pane.
 
 Typical workflows:
 - Copy a URL, path, or command that scrolled past.
-- Grab a block of output for a ticket or chat message.
+- Grab a block of output for a ticket or chat message — even when it's
+  wrapped in a rendered box (`╭─╮` framed blocks) or prefixed with line
+  numbers (`  1 │ `, `12:`): decoration is detected live while you
+  select (it dims, the footer names it) and stripped on copy/insert.
+  `P` copies the selection verbatim when you *want* the frame.
 - Insert a previous command back into the shell without retyping.
 
 See [`doc/flash-jump.md`](doc/flash-jump.md) for the jump algorithm and

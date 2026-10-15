@@ -19,7 +19,7 @@ labels = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 #                                second half above.
 line_labels = "directional"
 
-# ── Theme (16 color roles, hex #rrggbb) ───────────────────────────────────
+# ── Theme (17 color roles, hex #rrggbb) ───────────────────────────────────
 # Defaults are Catppuccin Macchiato. Override any role below.
 
 # Selection (blue bg, base fg).
@@ -51,6 +51,11 @@ color_jump_partial_fg = "#eed49f"
 color_search_match_bg = "#a6da95"
 color_search_current_bg = "#eed49f"
 color_search_fg = "#24273a"
+
+# Decoration-aware copy: detected box frames / line-number gutters dim
+# with this color while a selection covers them (they are stripped on
+# Enter/copy and p/insert; P copies raw).
+color_decoration_dim = "#5b6078"
 
 # ── Scroll-follow (initial view position) ────────────────────────────────
 # When the popup opens, where should it start? The source pane may be
