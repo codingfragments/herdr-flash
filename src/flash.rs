@@ -27,6 +27,22 @@ pub type JumpLabel = (usize, usize, usize, char);
 /// A partial (unlabeled) match: `(line, jump_col, label_col)`.
 pub type PartialMatch = (usize, usize, usize);
 
+/// Where the cursor lands on a committed word-jump — nvim flash's
+/// `jump.pos` option, as a verb key instead of a config knob.
+///
+/// - `Start` (`s`) — on the first char of the matched phrase.
+/// - `End` (`t`) — on the last char of the matched phrase (flash.nvim's
+///   `jump = { pos = "end" }`), so a selection extended to a jump target
+///   ends *on* the last character instead of a word-start short of it.
+///   The landing column is the clamped `label_col` (last real char), so
+///   virtual trailing-space matches never land past the line end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JumpPos {
+    #[default]
+    Start,
+    End,
+}
+
 /// Compute jump labels for the given typed prefix.
 ///
 /// Returns `(labels, partial_matches)`:
@@ -34,7 +50,8 @@ pub type PartialMatch = (usize, usize, usize);
 ///   from the cursor (nearest first). `jump_col` is the match start (where
 ///   the cursor lands); `label_col` is where the label glyph renders (last
 ///   char of the prefix, clamped to the last real character so EOL matches
-///   don't render past the line end).
+///   don't render past the line end). With `jump_pos = End`, `jump_col` is
+///   remapped to `label_col` in the returned tuples (see `JumpPos`).
 /// - `partial_matches = (line, jump_col, label_col)` — all matches when
 ///   there are too many to label; rendered as partial-highlight (no labels).
 ///
@@ -55,6 +72,7 @@ pub fn compute_jump_labels(
     content_rows: usize,
     cursor: (usize, usize),
     typed: &str,
+    jump_pos: JumpPos,
     label_chars: &[char],
 ) -> (Vec<JumpLabel>, Vec<PartialMatch>) {
     if typed.is_empty() {
@@ -96,6 +114,28 @@ pub fn compute_jump_labels(
             }
         }
     }
+
+    // Land the cursor on the match start, or — with `jump_pos = End` (the
+    // `t` verb) — on the last char of the typed prefix. The continuation
+    // logic above must keep working from the match start (its "char after
+    // the prefix" lookup would read the wrong cell from the end), so the
+    // remap happens only here, on the output tuples. `label_col` is
+    // already clamped to the last real character, so end-landings never
+    // sit on a virtual trailing space.
+    let land_partial = |m: PartialMatch| -> PartialMatch {
+        if jump_pos == JumpPos::End {
+            (m.0, m.2, m.2)
+        } else {
+            m
+        }
+    };
+    let land_label = |m: JumpLabel| -> JumpLabel {
+        if jump_pos == JumpPos::End {
+            (m.0, m.2, m.2, m.3)
+        } else {
+            m
+        }
+    };
 
     // Dedup: a line ending with a real space could produce the same
     // (line, jump_col, label_col) from both the natural and virtual match.
@@ -178,7 +218,7 @@ pub fn compute_jump_labels(
     // Too many non-pre-labeled matches to cover with the pool: fall back to
     // partial-match highlighting (no labels at all).
     if to_label.len() > pool.len() {
-        return (Vec::new(), raw);
+        return (Vec::new(), raw.into_iter().map(land_partial).collect());
     }
 
     // Sort non-pre-labeled by distance from cursor; assign pool labels.
@@ -188,12 +228,12 @@ pub fn compute_jump_labels(
         let dc = (col as isize - ccol as isize).unsigned_abs();
         dl * 10_000 + dc
     });
-    let mut labels: Vec<JumpLabel> = pre_labeled;
+    let mut labels: Vec<JumpLabel> = pre_labeled.into_iter().map(land_label).collect();
     labels.extend(
         to_label
             .into_iter()
             .zip(pool)
-            .map(|((line, jump_col, label_col), lc)| (line, jump_col, label_col, lc)),
+            .map(|((line, jump_col, label_col), lc)| land_label((line, jump_col, label_col, lc))),
     );
     (labels, Vec::new())
 }
@@ -273,7 +313,8 @@ mod tests {
     #[test]
     fn empty_prefix_yields_nothing() {
         let lines = styled_lines("foo bar baz");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "", JumpPos::Start, LABEL_CHARS);
         assert!(labels.is_empty());
         assert!(partials.is_empty());
     }
@@ -283,7 +324,8 @@ mod tests {
     fn few_matches_get_labeled() {
         // "foo bar baz" — matches for "ba" at cols 4 and 8.
         let lines = styled_lines("foo bar baz");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ba", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ba", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty(), "should not be partial");
         assert_eq!(labels.len(), 2, "two matches should get labels");
         // Nearest to cursor (0,0) is col 4 (bar), then col 8 (baz).
@@ -299,7 +341,8 @@ mod tests {
         // 60 matches for "x" — exceeds the 52-char pool.
         let line = styled_line(&"x ".repeat(60));
         let lines = vec![line];
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "x", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "x", JumpPos::Start, LABEL_CHARS);
         assert!(labels.is_empty(), "too many matches → no labels");
         assert_eq!(partials.len(), 60, "all matches in partial");
     }
@@ -310,7 +353,8 @@ mod tests {
         // "aba" — matches for "a" at cols 0 and 2. 'a' is typed, so it
         // can't be a label. The labels should be non-'a' pool chars.
         let lines = styled_lines("aba");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "a", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "a", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2);
         for &(_, _, _, lc) in &labels {
@@ -324,7 +368,8 @@ mod tests {
     fn trailing_space_matches_at_eol() {
         // "foo" at end of line — "foo " (with trailing space) should match.
         let lines = styled_lines("x foo");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "foo ", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "foo ", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(
             labels.len(),
@@ -334,11 +379,86 @@ mod tests {
         assert_eq!(labels[0].1, 2, "match starts at col 2");
     }
 
+    // ── End-jump tests (the `t` verb) ──────────────────────────────────
+
+    /// The motivating case: "cicero", jump-end on "ero" lands on the 'o',
+    /// not the 'e' (the match start).
+    #[test]
+    fn end_jump_lands_on_last_char_of_prefix() {
+        //        012345
+        let lines = styled_lines("cicero");
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ero", JumpPos::End, LABEL_CHARS);
+        assert!(partials.is_empty());
+        assert_eq!(labels.len(), 1);
+        assert_eq!(
+            labels[0].1, 5,
+            "end-jump lands on the 'o' (col 5), not the 'e' (col 3)"
+        );
+        assert_eq!(labels[0].2, 5, "landing coincides with the label glyph");
+    }
+
+    /// Start vs end: same query, only the landing column differs.
+    #[test]
+    fn start_and_end_jump_differ_only_in_landing() {
+        let lines = styled_lines("foo bar baz");
+        let (start_labels, _) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ba", JumpPos::Start, LABEL_CHARS);
+        let (end_labels, _) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ba", JumpPos::End, LABEL_CHARS);
+        assert_eq!(start_labels.len(), end_labels.len());
+        for (s, e) in start_labels.iter().zip(end_labels.iter()) {
+            // Same line, same label char, same label glyph position.
+            assert_eq!(s.0, e.0);
+            assert_eq!(s.2, e.2);
+            assert_eq!(s.3, e.3);
+            // Landing: start = first char of prefix, end = last char.
+            assert_eq!(s.1 + 1, e.1);
+        }
+    }
+
+    /// A trailing-space pattern ("foo ") that matches at EOL via virtual
+    /// spaces must still land on the last *real* character — never on a
+    /// virtual space past the line end.
+    #[test]
+    fn end_jump_trailing_space_lands_on_last_real_char() {
+        let lines = styled_lines("x foo");
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "foo ", JumpPos::End, LABEL_CHARS);
+        assert!(partials.is_empty());
+        assert_eq!(labels.len(), 1);
+        // "foo" occupies cols 2..4; col 4 is the 'o', the last real char.
+        assert_eq!(labels[0].1, 4, "end-jump clamps to the last real char");
+    }
+
+    /// Partial fallback (too many to label) must carry end-landing too —
+    /// partial tuples are what render, and their landing col is used when
+    /// the query narrows back into the labeled state.
+    #[test]
+    fn end_jump_partial_fallback_remapped() {
+        // 60 matches for "xx" — exceeds the 52-char pool.
+        let line = styled_line(&"xx ".repeat(60));
+        let lines = vec![line];
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "xx", JumpPos::End, LABEL_CHARS);
+        assert!(labels.is_empty());
+        assert_eq!(partials.len(), 60);
+        // "xx" at col c → end-landing is c+1, i.e. every even col.
+        for &(line, jc, lc) in &partials {
+            assert_eq!(line, 0);
+            assert_eq!(
+                jc, lc,
+                "end-landing partials land on the label col (prefix end)"
+            );
+        }
+    }
+
     /// Case-insensitive matching.
     #[test]
     fn case_insensitive_matching() {
         let lines = styled_lines("Foo BAR baz");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ba", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ba", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2, "BAR and baz both match 'ba'");
         // BAR at col 4, baz at col 8.
@@ -352,7 +472,8 @@ mod tests {
     fn only_visible_lines_matched() {
         let lines = styled_lines("foo\nbar\nbaz");
         // scroll_y=1, content_rows=1 → only line 1 ("bar") is visible.
-        let (labels, partials) = compute_jump_labels(&lines, 1, 1, (1, 0), "ba", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 1, 1, (1, 0), "ba", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 1, "only the visible line matches");
         assert_eq!(labels[0].0, 1, "match is on visible line 1");
@@ -365,7 +486,8 @@ mod tests {
         // Continuations: 'c' (col 2, unique) and 'd' (col 6, unique).
         // Each should be pre-assigned as its own label.
         let lines = styled_lines("abc abd");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ab", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ab", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2);
         let label_chars: Vec<char> = labels.iter().map(|&(_, _, _, lc)| lc).collect();
@@ -386,7 +508,8 @@ mod tests {
         // Continuation is 'x' for both (ambiguous, count=2) → 'x' excluded
         // from the pool. Labels must be non-'x' pool chars.
         let lines = styled_lines("abx abx");
-        let (labels, partials) = compute_jump_labels(&lines, 0, 10, (0, 0), "ab", LABEL_CHARS);
+        let (labels, partials) =
+            compute_jump_labels(&lines, 0, 10, (0, 0), "ab", JumpPos::Start, LABEL_CHARS);
         assert!(partials.is_empty());
         assert_eq!(labels.len(), 2);
         for &(_, _, _, lc) in &labels {

@@ -1,9 +1,9 @@
 # Flash-jump reference
 
-Word-jump (`s`) and line-jump (`l`) let you move the cursor to any
-visible position in two or three keystrokes. This doc covers the full
-algorithm — see [`doc/keybinding.md`](keybinding.md) for how to bind
-the actions, [`doc/config-reference.md`](config-reference.md) for
+Word-jump (`s`), end-jump (`t`), and line-jump (`l`) let you move the
+cursor to any visible position in two or three keystrokes. This doc covers
+the full algorithm — see [`doc/keybinding.md`](keybinding.md) for how to
+bind the actions, [`doc/config-reference.md`](config-reference.md) for
 config keys, and press `?` inside the popup for the quick reference.
 
 ---
@@ -23,6 +23,55 @@ the label that appears on it.
 
 `S` (or `Shift-s`) enters **select-jump**: same jump, but plants the
 selection anchor at the destination on completion.
+
+## End-jump (`t` / `T`)
+
+`t` is `s` with one difference: on commit, the cursor lands on the
+**last** character of the matched phrase instead of the first. `T`
+(or `Shift-t`) is its select-jump sibling — the anchor is planted at
+the destination on completion.
+
+For `cicero` with `t` + `ero` + label, `s` would land on the `e` (col 3);
+`t` lands on the `o` (col 5) — the end of what you typed.
+
+This is nvim `flash`'s `jump = { pos = "end" }` option, promoted to a
+first-class verb key: in flash it's a per-invocation Lua recipe you have
+to map yourself; here it's one keystroke because the key is free.
+
+The matching, narrowing, and label-assignment pipeline is *identical*
+to `s` — same case-insensitive substring matching, same continuation-aware
+label rules, same three UI states. Only the landing column of a committed
+jump changes:
+
+| Verb | Landing column | Label glyph |
+|---|---|---|
+| `s` | first char of the phrase | last char of the phrase |
+| `t` | last char of the phrase | last char of the phrase |
+
+Two consequences of that table:
+
+- In `t` mode the label glyph sits exactly where you will land; in `s`
+  mode the glyph previews the phrase's end but the cursor lands on its
+  start.
+- A trailing-space pattern (e.g. `"foo "`) that matches at line end via
+  virtual spaces still lands on the last **real** character — the landing
+column is the clamped label column, never a virtual space.
+
+The footer names the armed mode (`jump: …` vs `jump-end: …`) so the two
+are never confused mid-flight.
+
+### Why: selection endpoints
+
+The reason `t` exists is selections. With an anchor set, a jump extends
+the selection (anchor stays fixed, the cursor becomes the endpoint).
+Extending to "the end of that word" with `s` lands on the word's *start* —
+a couple of characters short, needing a follow-up `e`. `t` lands the
+selection endpoint directly on the final character:
+
+1. Position cursor at one end of the desired range
+2. `Space` to set anchor
+3. `t` → type → press label to land on the last char of the range
+4. `Enter` to copy or `p` to insert
 
 ### Matching
 
@@ -201,15 +250,17 @@ selection.
 
 ## Interaction with selection mode
 
-If a selection anchor is set when you enter jump mode, the jump
-**extends the selection** rather than moving the cursor freely. The
-anchor stays fixed; the cursor (and therefore the selection endpoint)
-moves to the jump target. This lets you select a range entirely by
+If a selection anchor is set when you enter jump mode (`s`, `t`, or
+`l`), the jump **extends the selection** rather than moving the cursor
+freely. The anchor stays fixed; the cursor (and therefore the selection
+endpoint) moves to the jump target — for `t`, the *last character of
+the matched phrase*. This lets you select a range entirely by
 keyboard:
 
 1. Position cursor at one end of the desired range
 2. `Space` to set anchor
-3. `s` → type → press label to set the other end
+3. `s` (or `t` to end on the phrase's last char) → type → press label
+   to set the other end
 4. `Enter` to copy or `p` to insert
 
 ---
