@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- **`just install [ref]`** — switch a local dev checkout to the released
+  plugin: removes any dev link, then installs (or updates) from
+  `github.com/codingfragments/herdr-flash` — rolling `latest` tag by
+  default, pin a version with `just install v0.4.0`. Re-running the
+  same command is the update (the ref is re-resolved and rebuilt in
+  place).
+
 ### Fixed
 
 - **Releases now publish automatically again** — a tag pushed with
