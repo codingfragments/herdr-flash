@@ -85,5 +85,109 @@ profile and bind to `flash-open` (which uses `default`), then make
 ## In-popup keybindings
 
 Once the popup is open, the plugin handles all keys itself. Press `?`
-inside the popup for a full keybinding dialog. See
-[`doc/use-cases.md`](use-cases.md) for worked walkthroughs.
+inside the popup for the quick-reference dialog; this section is the
+full reference, with examples. See [`doc/use-cases.md`](use-cases.md)
+for end-to-end walkthroughs and
+[`doc/flash-jump.md`](flash-jump.md) for the jump algorithms.
+
+### Normal mode — movement
+
+| Key | Action | Example |
+|---|---|---|
+| `←`/`→` | move one char; wraps across line ends | cursor at EOL → `→` moves to next line's first char |
+| `↑`/`↓` | move one logical line (clamped to line length) | |
+| `PgUp`/`PgDn` | half-page up / down | |
+| `Shift-←`/`Shift-→` | pan the view horizontally | long wrapped lines: `Shift-→` reveals `+N` cols (footer shows `+N`) |
+| `w`/`W` | next word start (word / WORD) | on `foo bar.baz`: `w` → `bar`, `w` → `baz`, `W` skips to end of `bar.baz` |
+| `b`/`B` | previous word start (word / WORD) | on the `.` in `foo bar.baz`: `b` → `bar`, again → `foo` |
+| `e`/`E` | next word end (word / WORD) | on `f` in `foo`: `e` lands on the 2nd `o` |
+| `0` | line start | |
+| `$` | line end | |
+
+### Normal mode — jumps (`flash`-style labels)
+
+All jumps work inside the visible viewport, in 2–3 keystrokes: type
+enough of the phrase (or nothing at all for `l`), then press the label
+that appears at the target.
+
+| Key | Action | Example |
+|---|---|---|
+| `s` | word-jump — type a phrase, then its label; cursor lands on the **first** char of the phrase | `s` `ero` `a` on `cicero` → cursor on the `e` |
+| `S` | select-jump — same jump, plants the selection anchor at the destination | `S` `ero` `a` on `cicero` → anchor on `e`, cursor follows for extending |
+| `t` | end-jump — same matching as `s`, cursor lands on the **last** char of the typed phrase | `s`+`ero`+`a` lands on `e`; `t` `ero` `a` on `cicero` → cursor on the `o` |
+| `T` | select-end-jump — `t`'s sibling with the anchor planted at the destination | |
+| `l` | line-jump — every visible line gets a gutter label instantly (`a`-`z` below, `A`-`Z` above, nearest first); column preserved | `l` `c` → 3rd line below the cursor |
+| `L` | select-line-jump — anchor at destination | |
+
+> `line_labels = "unified"` in `config.toml` splits the label charset
+> in half (one pool for both directions) instead of the default
+> `a`-below / `A`-above scheme — see
+> [`doc/config-reference.md`](config-reference.md#line_labels--line-jump-scheme).
+
+Jump-mode keys while typing (`s`/`S`/`t`/`T`): chars narrow the match,
+`Backspace` removes one, `Esc` cancels. In line-jump, any label jumps;
+any **other** character cancels the mode.
+
+**When to use which:** `s` to *start* something at the target (insert
+point, next motion); `t` to *end* something at the target — see the
+selection example below.
+
+### Normal mode — selection
+
+| Key | Action | Example |
+|---|---|---|
+| `Space` | set selection anchor; if an anchor is already set, swap cursor ↔ anchor | anchor at `foo`, cursor elsewhere → `Space` flips to extend from the other end |
+| `v` | toggle the active selection between stream (character flow) and block (rectangular) | select a column of a table: anchor top-left, `v`, move to bottom-right |
+
+With an anchor set, **any** jump or motion extends the selection
+(anchor fixed, cursor = moving endpoint):
+
+1. anchor at the start of the range (`Space`)
+2. `t` + type the last word of the range + its label — the selection now
+   ends **on** that word's last character (an `s`-jump would stop at the
+   word start, a couple of chars short)
+3. `Enter` to copy, or `p` to insert
+
+Block selections clamp back to line ends when you leave block mode.
+
+### Normal mode — search
+
+| Key | Action |
+|---|---|
+| `/` | incremental search (only when no anchor is set) — cursor follows matches live as you type |
+
+**Input phase:** type the query; `Enter` → navigation phase;
+`Backspace` deletes a char; `Esc` cancels.
+
+**Navigation phase:**
+
+| Key | Action |
+|---|---|
+| `n` | next match (wraps) |
+| `N` | previous match (wraps) |
+| `Space` | exit search, anchor a selection at the current match |
+| any other key | exit search, cursor stays at the current match |
+
+Example: `/` `E0308` `Enter` `n` `n` `Space` → anchor at the third
+`E0308` occurrence, then extend with motions or a `t`-jump.
+
+### Normal mode — actions
+
+| Key | Action | Example |
+|---|---|---|
+| `Enter` | copy the selection to the clipboard — box frames and line-number gutters inside it are stripped (the footer names what will be stripped while you select) | copy the command output from a rendered `╭─╮` box, text only |
+| `P` | copy **verbatim** — keep frames/numbers (for ASCII art, diagrams) | copy a boxed mermaid diagram whole |
+| `p` | insert the selection (stripped) into the source pane; multi-line inserts ask first | re-run a command from scrollback: `p`, then `y` on the confirm prompt |
+| `g` | cycle the scrollback depth profile (e.g. 200 → 5000 → unlimited → viewport) and re-grab | the URL you want is beyond 200 lines: `g` until it appears |
+| `?` | help dialog (any key dismisses it) | |
+| `Esc` | cancel chain: active mode → clear anchor → close the popup | one `Esc` per step back |
+
+### Confirm mode (multi-line insert)
+
+Shown before `p` inserts text that spans multiple lines (the insert
+lands in the source pane, so the popup asks):
+
+| Key | Action |
+|---|---|
+| `y` / `Enter` | insert | |
+| `Esc` | cancel — the selection is preserved (anchor stays set) | |

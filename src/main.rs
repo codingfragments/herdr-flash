@@ -455,17 +455,21 @@ enum Mode {
     Normal,
     /// Word-jump: user types a prefix, labels appear on visible matches.
     /// `labels` = (line, jump_col, label_col, label_char), sorted by distance
-    /// from cursor. `jump_col` is the match start; `label_col` is where the
-    /// label glyph is rendered (last char of the prefix, clamped to the
-    /// last real character so EOL matches don't render past the line end).
+    /// from cursor. `jump_col` is where the cursor lands — the match start
+    /// (`s`, `JumpPos::Start`) or, via the `t` verb (`JumpPos::End`), the
+    /// last char of the matched phrase, like nvim flash's `jump.pos =
+    /// "end"`. `label_col` is where the label glyph is rendered (last char
+    /// of the prefix, clamped to the last real character so EOL matches
+    /// don't render past the line end).
     /// `partial_matches` = (line, jump_col, label_col) for matches when
     /// there are too many to label (partial-highlight fallback, no labels).
-    /// `start_selection` = true when entered via `S` (plant anchor on jump).
+    /// `start_selection` = true when entered via `S`/`T` (plant anchor on jump).
     Jump {
         typed: String,
         labels: Vec<flash::JumpLabel>,
         partial_matches: Vec<flash::PartialMatch>,
         start_selection: bool,
+        jump_pos: flash::JumpPos,
     },
     /// Line-jump: every visible line (except the cursor line) gets a
     /// label in the gutter. `labels` = (line, label_char). Typing a
@@ -1119,13 +1123,16 @@ impl State {
     }
 
     /// Recompute labels for the current typed prefix and update `mode`.
-    fn recompute_jump(&mut self, typed: String, start_selection: bool) {
+    /// `jump_pos` selects the landing column of a committed jump
+    /// (Start = match start, End = last char of the phrase, the `t` verb).
+    fn recompute_jump(&mut self, typed: String, start_selection: bool, jump_pos: flash::JumpPos) {
         let (labels, partial_matches) = flash::compute_jump_labels(
             &self.lines,
             self.scroll_y,
             self.content_rows,
             self.cursor,
             &typed,
+            jump_pos,
             &self.config.labels,
         );
         self.mode = Mode::Jump {
@@ -1133,6 +1140,7 @@ impl State {
             labels,
             partial_matches,
             start_selection,
+            jump_pos,
         };
     }
 
@@ -1144,6 +1152,7 @@ impl State {
         typed: String,
         labels: Vec<flash::JumpLabel>,
         start_selection: bool,
+        jump_pos: flash::JumpPos,
     ) -> bool {
         use crossterm::event::{KeyCode, KeyModifiers};
         match key.code {
@@ -1153,7 +1162,7 @@ impl State {
             KeyCode::Backspace => {
                 let mut t = typed;
                 t.pop();
-                self.recompute_jump(t, start_selection);
+                self.recompute_jump(t, start_selection, jump_pos);
             }
             KeyCode::Char(c) => {
                 // If labels are showing and c matches a label → jump.
@@ -1179,7 +1188,7 @@ impl State {
                 if !c.is_control() && (key.modifiers.is_empty() || only_shift) {
                     let mut t = typed;
                     t.push(c);
-                    self.recompute_jump(t, start_selection);
+                    self.recompute_jump(t, start_selection, jump_pos);
                 }
             }
             _ => {}
@@ -1661,6 +1670,7 @@ impl State {
                 labels,
                 partial_matches,
                 start_selection: _,
+                jump_pos: _,
             } => (
                 typed.chars().count(),
                 labels.clone(),
@@ -1994,22 +2004,31 @@ impl State {
             labels,
             partial_matches,
             start_selection,
+            jump_pos,
         } = &self.mode
         {
             let prefix = if *start_selection { "[SEL] " } else { "" };
+            // `s` and `t` share the machinery; the footer names which
+            // landing mode is armed so an end-jump is never confused
+            // with a start-jump.
+            let verb = match jump_pos {
+                flash::JumpPos::End => "jump-end",
+                flash::JumpPos::Start => "jump",
+            };
             let hint = if !partial_matches.is_empty() {
                 format!(
-                    "{}jump: {}  ({} matches, keep typing…)",
+                    "{}{}: {}  ({} matches, keep typing…)",
                     prefix,
+                    verb,
                     typed,
                     partial_matches.len()
                 )
             } else if labels.is_empty() && !typed.is_empty() {
-                format!("{}jump: {}  (no matches)", prefix, typed)
+                format!("{}{}: {}  (no matches)", prefix, verb, typed)
             } else if labels.is_empty() {
-                format!("{}jump: type to search…", prefix)
+                format!("{}{}: type to search…", prefix, verb)
             } else {
-                format!("{}jump: {}  ({} matches)", prefix, typed, labels.len())
+                format!("{}{}: {}  ({} matches)", prefix, verb, typed, labels.len())
             };
             Line::from(vec![
                 Span::raw(" "),
@@ -2166,6 +2185,7 @@ impl State {
                 ("PgUp/PgDn", "half-page up / down"),
                 ("Shift-←/→", "pan horizontally"),
                 ("s / S", "word-jump / select-jump"),
+                ("t / T", "end-jump / select-jump (land on phrase end)"),
                 ("l / L", "line-jump / select-line-jump"),
                 ("/", "search"),
                 ("Space", "toggle selection anchor"),
@@ -2182,10 +2202,10 @@ impl State {
         // Right column: Jump, LineJump, Search, Confirm.
         let right = build_column(&[
             (
-                "Jump (s/S)",
+                "Jump (s/S · t/T)",
                 &[
                     ("type prefix", "narrow matches"),
-                    ("type label", "jump to match"),
+                    ("type label", "jump (t: land on end)"),
                     ("Backspace", "remove last char"),
                     ("Esc", "cancel jump"),
                 ],
@@ -2371,9 +2391,16 @@ fn run_loop(
             ref labels,
             partial_matches: _,
             start_selection,
+            jump_pos,
         } = state.mode
         {
-            state.handle_key_jump(&key, typed.clone(), labels.clone(), start_selection);
+            state.handle_key_jump(
+                &key,
+                typed.clone(),
+                labels.clone(),
+                start_selection,
+                jump_pos,
+            );
             continue;
         }
         if let Mode::LineJump {
@@ -2505,10 +2532,22 @@ fn run_loop(
             // `s` enters Jump mode; `S` (and `Shift-s`) enters select-jump
             // (plants the anchor at the destination on completion).
             KeyCode::Char('s') => {
-                state.recompute_jump(String::new(), false);
+                state.recompute_jump(String::new(), false, flash::JumpPos::Start);
             }
             KeyCode::Char('S') => {
-                state.recompute_jump(String::new(), true);
+                state.recompute_jump(String::new(), true, flash::JumpPos::Start);
+            }
+            // ── End-jump — nvim flash's `jump.pos = "end"` ──
+            // `t` is `s` with one difference: the cursor lands on the
+            // LAST char of the matched phrase instead of the first — so a
+            // selection extended to the jump target ends ON the phrase's
+            // final character, not a word-start short of it. `T` is its
+            // select-jump sibling (anchor at the destination's end).
+            KeyCode::Char('t') => {
+                state.recompute_jump(String::new(), false, flash::JumpPos::End);
+            }
+            KeyCode::Char('T') => {
+                state.recompute_jump(String::new(), true, flash::JumpPos::End);
             }
             // ── Line-jump (Phase 6) ───────────────────────────────────────
             // `l` enters LineJump mode; `L` (and `Shift-l`) enters
@@ -2801,6 +2840,113 @@ mod tests {
             .unwrap_or(0)
             .max(1);
         state
+    }
+
+    /// Key event helper: a plain char press, no modifiers.
+    fn key_char(c: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    // ── End-jump (the `t` verb) ──────────────────────────────────────────
+    //
+    // The motivating workflow, end to end through the real commit path
+    // (`recompute_jump` + `handle_key_jump`): anchor at the section start,
+    // end-jump to the last word — the selection must now end ON the phrase's
+    // final character, not a word-start a couple of chars short.
+
+    #[test]
+    fn end_jump_extends_selection_to_phrase_end() {
+        // f0 o1 o2 sp3 b4 a5 r6 sp7 b8 a9 z10
+        let mut s = state_from_text("foo bar baz");
+        s.cursor = (0, 0);
+        s.anchor = Some((0, 0));
+        s.selection_kind = SelectionKind::Stream;
+        s.recompute_jump("az".to_string(), false, flash::JumpPos::End);
+
+        // "az" has exactly one match (col 9) with no continuation char at
+        // EOL — it takes the first pool label, which must not be one of
+        // the typed chars (a/A/z/Z).
+        let (typed, labels, start_selection, jump_pos) = match s.mode {
+            Mode::Jump {
+                ref typed,
+                ref labels,
+                start_selection,
+                jump_pos,
+                ..
+            } => (typed.clone(), labels.clone(), start_selection, jump_pos),
+            _ => panic!("should be in Jump mode"),
+        };
+        assert_eq!(labels.len(), 1, "single match for 'az'");
+        let label_char = labels[0].3;
+        assert_ne!(label_char, 'a');
+        assert_ne!(label_char, 'z');
+
+        s.handle_key_jump(
+            &key_char(label_char),
+            typed,
+            labels,
+            start_selection,
+            jump_pos,
+        );
+
+        // Landed on 'z' (col 10) — the LAST char of the matched phrase.
+        assert_eq!(
+            s.cursor,
+            (0, 10),
+            "end-jump lands on the phrase's last char"
+        );
+        // Selection now spans cols 0..=10 — all 11 chars, inclusive of the
+        // final 'z'. The start-jump comparison below shows the two chars
+        // this saves.
+        assert_eq!(s.selection_info(), Some((1, 11)));
+        assert!(matches!(s.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn start_jump_lands_on_phrase_start_by_contrast() {
+        // Same fixture, same query — the `s` verb lands on the 'a' (col 9)
+        // and the selection ends two chars short, which is exactly the
+        // friction `t` removes.
+        let mut s = state_from_text("foo bar baz");
+        s.cursor = (0, 0);
+        s.anchor = Some((0, 0));
+        s.selection_kind = SelectionKind::Stream;
+        s.recompute_jump("az".to_string(), false, flash::JumpPos::Start);
+
+        let (typed, labels, start_selection, jump_pos) = match s.mode {
+            Mode::Jump {
+                ref typed,
+                ref labels,
+                start_selection,
+                jump_pos,
+                ..
+            } => (typed.clone(), labels.clone(), start_selection, jump_pos),
+            _ => panic!("should be in Jump mode"),
+        };
+        assert_eq!(labels.len(), 1);
+        s.handle_key_jump(
+            &key_char(labels[0].3),
+            typed,
+            labels,
+            start_selection,
+            jump_pos,
+        );
+
+        assert_eq!(
+            s.cursor,
+            (0, 9),
+            "start-jump lands on the phrase's first char"
+        );
+        // Cols 0..=9 — 10 chars: selection includes the 'a' but is one
+        // char short of the 'z' (the friction `t` removes).
+        assert_eq!(
+            s.selection_info(),
+            Some((1, 10)),
+            "ends on the 'a', short of the 'z'"
+        );
     }
 
     // Fixture: "foo bar.baz" — cols: f0 o1 o2 sp3 b4 a5 r6 .7 b8 a9 z10

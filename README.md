@@ -15,9 +15,12 @@ Herdr has no built-in way to select arbitrary text from a terminal pane's
 scrollback. `herdr-flash` opens a floating view of the source pane's
 scrollback, renders it with relative line numbers, and lets you navigate
 with a cursor and vim-style word motions (`w`/`b`/`e`/`0`/`$`), jump to a
-word or line with `flash`-style label jumps (`s`/`l`), or search
-incrementally (`/`). Select a precise range, then copy it to the clipboard
-or insert it directly into the source pane.
+word or line with `flash`-style label jumps (`s`/`l`) — or jump straight
+to the **end** of a phrase with `t` (nvim flash's `jump.pos = "end"`, so
+a selection extended to a jump target finishes on the phrase's last
+character) — or search incrementally (`/`). Select a precise range,
+then copy it to the clipboard or insert it directly into the source
+pane.
 
 Typical workflows:
 - Copy a URL, path, or command that scrolled past.

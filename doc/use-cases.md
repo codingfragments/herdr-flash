@@ -28,6 +28,9 @@ but it's already scrolled off:
    jump the cursor there.
 4. Press `Space` to set the selection anchor, then `$` (or `e`) to
    extend to the end of the URL.
+   *Shortcut:* press `t` instead of `s` in step 3 (end-jump — the cursor
+   lands on the **last** char of the matched phrase) and the range
+   finishes on the URL's end without the extend step.
 5. Press `Enter` to copy to the clipboard. The popup closes.
 6. Paste (`Cmd-V` / `Ctrl-Shift-V`) wherever you need it.
 

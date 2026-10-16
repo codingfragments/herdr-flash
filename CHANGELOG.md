@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **End-jump (`t` / `T`)** — `t` is `s` with one difference: the cursor
+  lands on the **last** character of the matched phrase instead of the
+  first (nvim flash.nvim's `jump = { pos = "end" }`, promoted from a
+  per-invocation Lua recipe to a first-class verb key). `T` is the
+  select-jump sibling (anchor planted at the destination). Matching,
+  narrowing, and the continuation-aware label rules are identical to `s` —
+  only the landing column changes, and the footer names the armed mode
+  (`jump:` vs `jump-end:`) to keep the two distinguishable mid-flight.
+  Built for selection endpoints: with an anchor set, a `t`-jump extends
+  the selection *onto* the phrase's final character, removing the
+  "a couple of characters short" follow-up (`e`/`$`) after jumping to
+  the end of a range. Trailing-space patterns (`"foo "`) still land on
+  the last real character — never on a virtual space.
+- **Full in-popup key reference** (`doc/keybinding.md`) — every key in
+  every mode (movement, jumps, selection, search, actions, confirm),
+  each with a worked example; the `?` dialog remains the in-popup
+  quick reference.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added
