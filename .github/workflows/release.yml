@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Dispatched by the Tag release workflow (tag-on-release-merge.yml).
+  # A tag pushed with GITHUB_TOKEN does NOT trigger `on: push` workflows
+  # (GitHub event suppression) — workflow_dispatch is the one documented
+  # exception that still fires under GITHUB_TOKEN, so the tagger hands the
+  # fresh tag to this workflow explicitly instead of waiting for a push
+  # event that never arrives. Dispatched on the tag ref itself
+  # (e.g. ref=v0.4.0), so `github.ref`, `github.ref_name` and `GITHUB_SHA`
+  # are identical to a real tag push. Also usable manually to backfill a
+  # release for an already-pushed tag (dispatch with ref=<tag>).
+  workflow_dispatch:
 
 jobs:
   build:

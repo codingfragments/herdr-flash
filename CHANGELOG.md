@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Releases now publish automatically again** — a tag pushed with
+  `GITHUB_TOKEN` does not trigger `on: push: tags` workflows (GitHub
+  event suppression), so the auto-tagged `v0.4.0` initially landed
+  tagged-but-unreleased until a manual tag re-push. The `Tag release`
+  workflow now dispatches `release.yml` on the new tag via
+  `workflow_dispatch` — the one documented event that still fires under
+  `GITHUB_TOKEN`. `release.yml` is also dispatchable manually on a tag
+  ref to backfill a release (`gh workflow run Release --ref v<x.y.z>`).
+  CLAUDE.md's release process updated: tagging + publishing are now
+  fully automatic on release-PR merge; manual tagging is a fallback
+  only.
+
 ## [0.4.0] - 2026-10-16
 
 ### Added
