@@ -31,6 +31,11 @@ link: build
 unlink:
     herdr plugin unlink {{ plugin_id }}
 
+# install/update the released plugin from GitHub, replacing any local dev link (default ref: rolling `latest`; pin with `just install v0.4.0`)
+install ref="latest":
+    @-herdr plugin unlink {{ plugin_id }}
+    herdr plugin install codingfragments/herdr-flash --ref {{ ref }}
+
 # rebuild and re-link in one step, e.g. after pulling changes
 relink: unlink link
 
