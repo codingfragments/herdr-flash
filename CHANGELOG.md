@@ -22,6 +22,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   "a couple of characters short" follow-up (`e`/`$`) after jumping to
   the end of a range. Trailing-space patterns (`"foo "`) still land on
   the last real character — never on a virtual space.
+- **Full in-popup key reference** (`doc/keybinding.md`) — every key in
+  every mode (movement, jumps, selection, search, actions, confirm),
+  each with a worked example; the `?` dialog remains the in-popup
+  quick reference.
 
 ## [0.3.0] - 2026-10-15
 
