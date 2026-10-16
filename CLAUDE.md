@@ -42,13 +42,21 @@ Two-step merge flow, same shape as the original Zellij plugin:
    - `Cargo.toml` version bump (semver: patch/minor/major)
    - `CHANGELOG.md` entry
 3. Merge the release PR to `main`.
-4. Tag the resulting merge commit: `git tag v<x.y.z> && git push origin v<x.y.z>`
-5. Pushing the tag triggers `.github/workflows/release.yml`, which builds
-   release binaries for all target triples (see PLANNING.md §9), computes
-   SHA-256 checksums, and publishes the GitHub release automatically.
+4. The `Tag release` workflow (`.github/workflows/tag-on-release-merge.yml`)
+   fires on that merge, creates and pushes `v<x.y.z>`, then **dispatches
+   `release.yml` on the new tag** (a tag pushed with `GITHUB_TOKEN` does
+   not trigger `on: push` workflows — the dispatch is the bridge that
+   makes the chain actually run).
+5. `release.yml` builds release binaries for all target triples
+   (see PLANNING.md §9), computes SHA-256 checksums, publishes the
+   GitHub release automatically, and moves the rolling `latest` tag.
 
 > Never push a `v*.*.*` tag from a feature branch or before the release PR
-> is merged.
+> is merged — a manually pushed tag also triggers `release.yml` directly.
+> Manual steps only as fallback: if the tag exists but no release was
+> published, dispatch `release.yml` on the tag ref
+> (`gh workflow run Release --ref v<x.y.z>`); to backfill a missing tag
+> entirely, dispatch the `Tag release` workflow from `main` (it tags `HEAD`).
 
 ## Project conventions
 
