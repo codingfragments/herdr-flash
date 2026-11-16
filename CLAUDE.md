@@ -1,4 +1,4 @@
-# herdr-flash — Claude Code conventions
+# herdr-flash — agent conventions (Claude Code, pi, …)
 
 Mirrors the gitflow used in the original `zellij-flash` repo, adapted for
 this port's binary-release model.
@@ -24,13 +24,15 @@ this port's binary-release model.
   for "push" / "looks good".
 - End each phase with: what to test, how to trigger it, what works vs
   what's still a stub.
-- Current phase: PLANNING.md's open questions (§12) are resolved
-  (inherited from the sister `herdr-zextract` port, confirmed live
-  against Herdr 0.8.0) — implementation branches now follow the phase
-  sequence in PLANNING.md §11 Implementation phases, one `phase/` branch/PR
-  per phase, in order. The two flash-specific items in §12 (mouse events
-  in a plugin popup, live popup resize) get confirmed in the Phase 1 / Phase 2
-  spikes rather than blocking the start.
+- **Current work: [rex-migration.md](rex-migration.md)** — make this one
+  binary serve both Herdr and Rex via the shared `muxhost` crate (host
+  trait, Rex backend, Lua launcher, mise distribution). Read it first,
+  work its phases in order (one `phase/rex-N-…` branch/PR each), and
+  update its Status lines, checkboxes and spike table as you go. It is
+  blocked on the sister repo `herdr-zextract`'s Rex backend landing first.
+  Herdr behavior must not regress.
+- PLANNING.md §11 phases (the original herdr port) are complete; PLANNING.md
+  remains the design reference for the view, jumps, selection and config.
 
 ## Release process
 
