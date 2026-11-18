@@ -49,6 +49,16 @@ launcher. The multiplexer glue lives in a shared crate, not in this repo.
   ```
   Verified: `mise ls-remote github:codingfragments/herdr-flash` resolves
   `0.2.1 … 0.4.0` (plus the rolling `latest` tag — see Phase 5).
+  That is the **Rex** install path.
+- **herdr install stays self-sufficient (option B, decided 2026-11 for
+  all plugins, see `../herdr-zextract/rex-migration.md` "Decisions"):**
+  `herdr plugin install codingfragments/herdr-flash` stays a single
+  command and needs no mise. Its `[[build]]` runs `bin/fetch-binary`
+  (download the release binary matching the checked-out version into
+  `target/release/`, sha256-checked, fall back to `cargo build
+  --release`), and the pane starts `bin/flash-launch` (prefer the
+  plugin's own binary, then `herdr-flash` on `PATH`). herdr and Rex each
+  keep their own copy; update both. Reuse zextract's scripts, renamed.
 - **Scroll-follow on Rex: degrade to `off`** (current default anyway).
   Rex scrolls client-side, per GUI client; the server API exposes no
   viewport scroll offset. Revisit if Rex adds one (Phase 5 feature
@@ -146,9 +156,14 @@ Status: ☐ not started
   restoring it as an insert alias — keep `p` regardless.
 - [ ] `--version` and `--host-api` (integer, start at 1) for the Lua
   launcher's compatibility check.
-- [ ] **Herdr manifest:** `[[panes]].command = ["herdr-flash"]` (PATH /
-  mise), drop `[[build]]` — mirrors zextract (spike S5 there: does
-  herdr's popup PATH include mise installs?).
+- [ ] **Herdr install, option B** (copy from zextract's Phase 3 once it
+  has landed there):
+  - `bin/fetch-binary` with the asset name `herdr-flash-<triple>.tar.gz`;
+    `[[build]] command = ["sh", "bin/fetch-binary"]`.
+  - `bin/flash-launch`: exec `./target/release/herdr-flash` if present,
+    else `herdr-flash` on `PATH`, else an install hint; manifest
+    `[[panes]].command = ["sh", "bin/flash-launch"]`.
+  - Launcher actions pass `--env FLASH_HOST=herdr`.
 
 ### Phase 4 — Rex launcher (`rex/flash.lua`) — `phase/rex-4-lua-launcher`
 
@@ -178,13 +193,15 @@ user copies/symlinks it to `~/.config/rex/plugins/flash.lua` and adds
 
 Status: ☐ not started
 
-- [ ] Rolling `latest` tag/release: mise lists it as a version, making
-  `= "latest"` ambiguous. Same decision as zextract (recommendation:
-  drop the rolling release; pin exact versions in mise).
+- [ ] Rolling `latest` tag/release: **keep it** (option B: `herdr plugin
+  install --ref latest` still uses it, and `bin/fetch-binary` resolves
+  the matching release from that ref's `Cargo.toml`). Document "pin
+  exact versions in mise" instead of `= "latest"`.
 - [ ] Verify `mise use -g github:codingfragments/herdr-flash@<ver>` on
   macOS arm64 + one Linux host.
-- [ ] README Install rewritten: mise first, `cargo install --git` as
-  source fallback, herdr bits under "Herdr".
+- [ ] README Install rewritten: "Herdr" (`herdr plugin install`, no Rust
+  needed for tagged versions) and "Rex" (mise), `cargo install --git` as
+  source fallback.
 - [ ] Note for later: ask superlogical for a client/viewport scroll-offset
   API (would re-enable scroll-follow on Rex).
 
@@ -193,7 +210,7 @@ Status: ☐ not started
 Status: ☐ not started
 
 - [ ] Version bump + CHANGELOG ("Rex support", "muxhost", "neutral config
-  path", "herdr runs PATH binary"). Tagging is automatic via
+  path", "herdr plugin install downloads the release binary"). Tagging is automatic via
   `tag-on-release-merge.yml` (see CLAUDE.md release process).
 - [ ] Update the user's Rex `migration-plan.md` (`~/.config/rex/`,
   dotfiles repo — separate PR): flash from "impossible" to "done";
