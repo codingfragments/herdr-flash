@@ -29,6 +29,11 @@ config:
 | `FLASH_CONFIG` | this plugin | An explicit config file, used instead of the normal lookup (see [`config-reference.md`](config-reference.md)). |
 | `FLASH_PROFILE` | this plugin | Selects the named `[profiles.<n>]` depth cycle at launch. |
 | `FLASH_HOST` | this plugin | Forces the multiplexer host (`herdr`/`rex`) instead of detection; set by launchers. |
+| `FLASH_CONFIG` | this plugin | An explicit config file, used instead of the normal lookup. |
+| `FLASH_SOURCE_BLOCK` | this plugin (Rex) | The block to grab from and insert into; set by the Rex launcher. |
+
+The binary also answers two flags before doing anything else: `--version`
+and `--host-api` (an integer the Rex launcher checks).
 
 `HERDR_ACTIVE_PANE_ID` is a fallback for manual dev-testing when
 `HERDR_PLUGIN_CONTEXT_JSON` is not set (e.g. running the binary outside

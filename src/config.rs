@@ -123,10 +123,10 @@ pub struct Config {
     /// Initial-view scroll-follow mode (default `Off`). See [`ScrollFollow`].
     pub scroll_follow: ScrollFollow,
     /// Debounce window (ms) for identical consecutive key events — a
-    /// workaround for popup keyboard quirks (herdr's legacy keyboard
-    /// mode double-delivers; hosts with clean key events can set 0 via
-    /// `[host.<name>].key_debounce_ms`). See `KEY_DEBOUNCE` in main.rs.
-    pub key_debounce_ms: u64,
+    /// workaround for popup keyboard quirks. `None` = not configured:
+    /// `main` then picks the host default (`Caps::legacy_keyboard` →
+    /// 40, else 0); an explicit root or `[host.<name>]` value wins.
+    pub key_debounce_ms: Option<u64>,
 }
 
 impl Default for Config {
@@ -142,7 +142,7 @@ impl Default for Config {
             }],
             current_profile: 0,
             scroll_follow: ScrollFollow::Off,
-            key_debounce_ms: 40,
+            key_debounce_ms: None,
         }
     }
 }
@@ -360,7 +360,7 @@ fn apply_toml(config: &mut Config, root: &toml::Value) {
         .and_then(toml::Value::as_integer)
     {
         if v >= 0 {
-            config.key_debounce_ms = v as u64;
+            config.key_debounce_ms = Some(v as u64);
         }
     }
     if let Some(v) = table.get("scroll_follow").and_then(toml::Value::as_str) {
@@ -622,7 +622,7 @@ depths = []
 
     #[test]
     fn default_key_debounce_is_40ms() {
-        assert_eq!(Config::default().key_debounce_ms, 40);
+        assert_eq!(Config::default().key_debounce_ms, None);
     }
 
     // ── Config location (Rex port Phase 2) ─────────────────────────
@@ -718,7 +718,7 @@ key_debounce_ms = 60
         let merged = apply_host_overrides(root, "rex");
         apply_toml(&mut config, &merged);
         assert_eq!(config.scroll_follow, ScrollFollow::Off);
-        assert_eq!(config.key_debounce_ms, 0);
+        assert_eq!(config.key_debounce_ms, Some(0));
         // The other host's values never apply.
         let merged = apply_host_overrides(
             toml::from_str::<toml::Value>(
@@ -736,7 +736,7 @@ scroll_follow = "off"
         let mut config = Config::default();
         apply_toml(&mut config, &merged);
         assert_eq!(config.scroll_follow, ScrollFollow::Offset);
-        assert_eq!(config.key_debounce_ms, 60);
+        assert_eq!(config.key_debounce_ms, Some(60));
     }
 
     #[test]
@@ -744,12 +744,12 @@ scroll_follow = "off"
         let mut config = Config::default();
         let root: toml::Value = toml::from_str("key_debounce_ms = 25").unwrap();
         apply_toml(&mut config, &root);
-        assert_eq!(config.key_debounce_ms, 25);
+        assert_eq!(config.key_debounce_ms, Some(25));
         // and a host override beats the root
         let root: toml::Value =
             toml::from_str("key_debounce_ms = 25\n[host.rex]\nkey_debounce_ms = 0\n").unwrap();
         let mut config = Config::default();
         apply_toml(&mut config, &apply_host_overrides(root, "rex"));
-        assert_eq!(config.key_debounce_ms, 0);
+        assert_eq!(config.key_debounce_ms, Some(0));
     }
 }

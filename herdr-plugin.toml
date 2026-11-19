@@ -4,13 +4,20 @@ version = "0.1.0"
 min_herdr_version = "0.8.0"
 platforms = ["macos", "linux"]
 
+# Puts the binary into target/release/: downloads the release binary
+# for this version (no Rust needed), or builds from source on untagged
+# commits / when the download fails. See bin/fetch-binary.
+# `herdr plugin link` skips this step - run `just build` first.
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["./bin/fetch-binary"]
 
 [[panes]]
 id = "flash"
 title = "flash"
-command = ["./target/release/herdr-flash"]
+# bin/flash-launch prefers target/release/herdr-flash, then a
+# herdr-flash on PATH (e.g. installed with mise), and pins
+# FLASH_HOST=herdr.
+command = ["./bin/flash-launch"]
 placement = "popup"
 width = "90%"
 height = "85%"

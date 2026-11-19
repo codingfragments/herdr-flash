@@ -30,9 +30,9 @@ use ratatui::Terminal;
 
 use render::Theme;
 
-// Same-key debounce: see `Config::key_debounce_ms` (default 40 ms,
-// `[host.<name>]`-overridable) — herdr's popup keyboard mode
-// double-delivers; hosts with clean key events can set 0.
+// Same-key debounce: see `Config::key_debounce_ms` — `None` (unset)
+// means the host's keyboard mode decides (herdr legacy mode
+// double-delivers → 40 ms; hosts with clean key events → 0).
 
 /// Read the scrollback of the pane this popup was opened over, via
 /// [`Host::read_pane`] with `ReadFormat::Ansi`, so the text carries
@@ -209,8 +209,88 @@ pub struct StyledChar {
 /// parse failure we fall back to plain unstyled chars so the view never
 /// breaks — color reproduction is a best-effort enhancement, not a
 /// crash-the-plugin concern.
+/// Expand/strip the non-SGR escape sequences a multiplexer capture can
+/// carry, before `ansi-to-tui` parses (it handles SGR but *drops*
+/// cursor-forward, which would shift columns):
+/// - `CSI n C` (cursor forward — Rex's `--format=vt` uses it as
+///   run-length spaces) becomes n spaces;
+/// - SGR (`CSI … m`) is kept verbatim, for ansi-to-tui to style;
+/// - every other escape (OSC 8 hyperlinks, charset selection, other
+///   CSI) is dropped, so styles survive and columns line up.
+fn vt_prepare(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b {
+            // copy the (UTF-8) char
+            let ch_len = utf8_len(bytes[i]);
+            out.push_str(&text[i..i + ch_len]);
+            i += ch_len;
+            continue;
+        }
+        i += 1;
+        match bytes.get(i) {
+            Some(b'[') => {
+                // CSI: params until a letter final
+                i += 1;
+                let start = i;
+                while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+                    i += 1;
+                }
+                let final_byte = bytes.get(i).copied().unwrap_or(b'm');
+                i += 1;
+                match final_byte {
+                    b'C' => {
+                        let n: usize = text[start..i - 1]
+                            .split(';')
+                            .next()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(1);
+                        for _ in 0..n.max(1) {
+                            out.push(' ');
+                        }
+                    }
+                    b'm' => {
+                        out.push_str(&text[start - 2..i]); // keep "ESC[…m"
+                    }
+                    _ => {} // every other CSI: dropped
+                }
+            }
+            Some(b']') => {
+                // OSC: drop until BEL or ST (ESC \)
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == 0x07 {
+                        i += 1;
+                        break;
+                    }
+                    if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            Some(b'(') | Some(b')') => i += 2, // charset designation + 1 char
+            _ => i += 1,                       // other single-char escapes
+        }
+    }
+    out
+}
+
+fn utf8_len(b: u8) -> usize {
+    match b {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    }
+}
+
 fn parse_ansi_lines(text: &str) -> Vec<Vec<StyledChar>> {
     use ansi_to_tui::IntoText as _;
+    let text = vt_prepare(text);
     match text.into_text() {
         Ok(t) => t
             .lines
@@ -2199,11 +2279,7 @@ fn run_loop(
 ) -> io::Result<()> {
     // Last key event processed, for same-key debounce (see KEY_DEBOUNCE;
     // the config can shrink the window for hosts with clean key events).
-    let debounce = if state.config.key_debounce_ms > 0 {
-        Duration::from_millis(state.config.key_debounce_ms)
-    } else {
-        Duration::ZERO
-    };
+    let debounce = Duration::from_millis(state.config.key_debounce_ms.unwrap_or(40));
     let mut last_key: Option<(KeyCode, KeyModifiers, Instant)> = None;
 
     loop {
@@ -2518,7 +2594,25 @@ fn run_loop(
     Ok(())
 }
 
+/// Version of the host/launcher interface this binary offers, printed
+/// by `--host-api` (launchers check it; bump when the Rex launcher
+/// starts relying on something new).
+pub const HOST_API: u32 = 1;
+
 fn main() {
+    // Plain flags for launchers and install scripts, answered before
+    // host detection or terminal setup.
+    match std::env::args().nth(1).as_deref() {
+        Some("--version") | Some("-V") => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("--host-api") => {
+            println!("{}", HOST_API);
+            return;
+        }
+        _ => {}
+    }
     if let Err(message) = (|| {
         // Host detection: herdr or Rex (`FLASH_HOST` wins; env-based
         // otherwise — see muxhost). The source pane comes with it.
@@ -2529,6 +2623,19 @@ fn main() {
         // Missing/unset/parse-error → built-in defaults, never crash.
         // The running host's [host.<name>] overrides apply.
         let config = config::load(host.name());
+        // Host capabilities shape two behaviors (see rex-migration.md):
+        // - scroll-follow needs the host's scroll offset; Rex scrolls
+        //   client-side, so degrade to Off (the default anyway).
+        // - the debounce default follows the host's keyboard mode; an
+        //   explicit `key_debounce_ms` (root or [host.<name>]) wins.
+        let mut config = config;
+        let caps = host.caps();
+        if !caps.scroll_follow && config.scroll_follow != config::ScrollFollow::Off {
+            config.scroll_follow = config::ScrollFollow::Off;
+        }
+        if config.key_debounce_ms.is_none() {
+            config.key_debounce_ms = Some(if caps.legacy_keyboard { 40 } else { 0 });
+        }
 
         // Initial grab at the active profile's first depth.
         let depth = config.profiles[config.current_profile]
@@ -2612,6 +2719,54 @@ fn main() {
         run(&mut state).map_err(|e| format!("terminal error: {e}"))
     })() {
         eprintln!("herdr-flash error: {message}");
+    }
+}
+
+#[cfg(test)]
+mod vt_prepare_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_forward_expands_to_spaces() {
+        // Rex's --format=vt uses CSI n C as run-length spaces
+        assert_eq!(vt_prepare("ab\x1b[3Ccd"), "ab   cd");
+        assert_eq!(vt_prepare("x\x1b[C y"), "x  y"); // no param = 1
+    }
+
+    #[test]
+    fn sgr_is_kept_verbatim() {
+        let sgr = "\x1b[38;2;202;211;245m";
+        assert_eq!(
+            vt_prepare(&format!("a{sgr}X\x1b[0m b")),
+            format!("a{sgr}X\x1b[0m b")
+        );
+    }
+
+    #[test]
+    fn other_csi_and_osc_are_dropped() {
+        // OSC 8 hyperlink with ST: the markers drop, the link TEXT
+        // ("link") stays visible; cursor positioning is dropped
+        assert_eq!(
+            vt_prepare("\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\\x1b[2;5HX"),
+            "linkX"
+        );
+        // OSC with BEL terminator
+        assert_eq!(vt_prepare("\x1b]0;title\x07ok"), "ok");
+        // charset designation
+        assert_eq!(vt_prepare("\x1b(Ba"), "a");
+    }
+
+    #[test]
+    fn parse_keeps_columns_with_cursor_forward() {
+        // styled "XY" at the start, then a long cursor-forward run, then
+        // "  end": columns must line up (dropped CSI n C would shift).
+        let text = "\x1b[38;2;202;211;245mXY\x1b[0m\x1b[78C  end";
+        let line = parse_ansi_lines(text).remove(0);
+        let cols: String = line.iter().map(|c| c.ch).collect();
+        assert_eq!(cols.len(), 85); // 2 + 78 + "  end" (5)
+        assert_eq!(&cols[..2], "XY");
+        assert!(cols.ends_with("  end"), "{cols:?}");
+        assert!(cols.starts_with("XY"), "{cols:?}");
     }
 }
 

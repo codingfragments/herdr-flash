@@ -1,0 +1,95 @@
+#!/bin/sh
+# herdr-flash: get the binary for this checkout into target/release/.
+#
+# Run by herdr's [[build]] step (`herdr plugin install`), so installing
+# a released version needs no Rust toolchain:
+#
+#   - On a tagged release commit (or when git can't tell): download the
+#     release binary for the version in Cargo.toml from GitHub releases,
+#     check its sha256 and unpack it into target/release/. If that
+#     fails, build from source.
+#   - On an untagged commit (a branch or dev ref): build from source
+#     with `cargo build --release`, since the release binary would be
+#     older than the code. Without cargo, fall back to the release
+#     binary with a warning.
+#
+# FLASH_BUILD=source or FLASH_BUILD=download forces one way.
+# Needs: sh, curl, tar, shasum or sha256sum (download); cargo (source).
+set -eu
+
+REPO="codingfragments/herdr-flash"
+BIN="herdr-flash"
+
+cd "$(dirname "$0")/.."
+
+say() { printf '%s: %s\n' "$BIN" "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+build_from_source() {
+  if ! have cargo; then
+    say "cannot build from source ($1): cargo not found - install Rust from https://rustup.rs"
+    exit 1
+  fi
+  say "building from source: $1"
+  cargo build --release
+  exit 0
+}
+
+version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64 | Darwin-aarch64) triple=aarch64-apple-darwin ;;
+  Linux-x86_64 | Linux-amd64) triple=x86_64-unknown-linux-gnu ;;
+  Linux-aarch64 | Linux-arm64) triple=aarch64-unknown-linux-gnu ;;
+  *) triple="" ;;
+esac
+
+# Download into target/release/. Returns non-zero (with a message) on
+# any failure except a checksum mismatch, which stops the script.
+download() {
+  [ -n "$version" ] || { say "no version found in Cargo.toml"; return 1; }
+  [ -n "$triple" ] || { say "no release binary for $(uname -s) $(uname -m)"; return 1; }
+  have curl || { say "curl not found"; return 1; }
+  asset="$BIN-$triple.tar.gz"
+  url="https://github.com/$REPO/releases/download/v$version/$asset"
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  say "downloading v$version for $triple"
+  if ! curl -fsSL -o "$tmp/$asset" "$url" ||
+    ! curl -fsSL -o "$tmp/$asset.sha256" "$url.sha256"; then
+    say "download failed: $url"
+    return 1
+  fi
+  expected=$(cut -d ' ' -f 1 <"$tmp/$asset.sha256")
+  if have shasum; then
+    actual=$(shasum -a 256 "$tmp/$asset" | cut -d ' ' -f 1)
+  else
+    actual=$(sha256sum "$tmp/$asset" | cut -d ' ' -f 1)
+  fi
+  if [ "$expected" != "$actual" ]; then
+    say "checksum mismatch for $asset (expected $expected, got $actual)"
+    exit 1
+  fi
+  mkdir -p target/release
+  tar -xzf "$tmp/$asset" -C "$tmp"
+  mv -f "$tmp/$BIN" "target/release/$BIN"
+  chmod +x "target/release/$BIN"
+  say "installed target/release/$BIN (v$version)"
+}
+
+untagged() {
+  have git && git rev-parse --git-dir >/dev/null 2>&1 &&
+    ! git describe --tags --exact-match HEAD >/dev/null 2>&1
+}
+
+case "${FLASH_BUILD:-auto}" in
+  source) build_from_source "FLASH_BUILD=source" ;;
+  download) download || exit 1 ;;
+  *)
+    if untagged; then
+      have cargo && build_from_source "HEAD is not a tagged release commit"
+      say "warning: HEAD is not a tagged release commit and cargo is missing;"
+      say "warning: using the v$version release binary, which may be older than this code"
+    fi
+    download || build_from_source "no release binary available"
+    ;;
+esac
