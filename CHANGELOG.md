@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-19
+
+### Changed
+
+- Shared host layer updated from [`muxhost`](https://github.com/codingfragments/muxhost)
+  v0.1.0 to v0.3.6. Nothing flash uses changed in its core API, so
+  there is no behaviour change on herdr or Rex; it picks up the Rex-side
+  fixes the shared layer gained since (block calls scoped to the block's
+  own session, label-before-terminal-title pane names).
+
 ### Added
 
 - **`just install [ref]`** — switch a local dev checkout to the released
