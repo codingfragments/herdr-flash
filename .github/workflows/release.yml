@@ -26,11 +26,11 @@ jobs:
           # No x86_64-apple-darwin (Intel Mac) - not worth the CI minutes
           # for a platform with negligible remaining install base among
           # this plugin's users; build from source there instead.
-          - os: macos-14
+          - os: blacksmith-6vcpu-macos-15
             target: aarch64-apple-darwin
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2604
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
+          - os: blacksmith-4vcpu-ubuntu-2404-arm
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
@@ -69,7 +69,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2604
     permissions:
       contents: write
     steps:
