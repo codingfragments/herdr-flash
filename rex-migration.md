@@ -1,6 +1,7 @@
 # Rex migration plan — one binary, two hosts, shared `muxhost` crate
 
-> **Status: planned, not started.** This is the active plan for this repo.
+> **Status: complete — v0.5.0 released and live under herdr and Rex
+> (2026-11-19).** This plan stays as the record; herdr-nav follows it.
 > Agents: read this file before starting work, follow the phases in order
 > (one `phase/rex-N-…` branch + PR per phase, see CLAUDE.md gitflow), and
 > tick the checkboxes / update the "Status" lines as phases land.
@@ -212,7 +213,7 @@ user copies/symlinks it to `~/.config/rex/plugins/flash.lua` and adds
 
 ### Phase 5 — distribution polish — `phase/rex-5-distribution`
 
-Status: ☐ not started
+Status: ☑ done (2026-11-19, folded into the v0.5.0 close-out)
 
 - [ ] Rolling `latest` tag/release: **keep it** (option B: `herdr plugin
   install --ref latest` still uses it, and `bin/fetch-binary` resolves
@@ -228,7 +229,7 @@ Status: ☐ not started
 
 ### Phase 6 — release `v0.5.0` — `release/0.5.0`
 
-Status: ☐ not started
+Status: ☑ done (2026-11-19)
 
 - [ ] Version bump + CHANGELOG ("Rex support", "muxhost", "neutral config
   path", "herdr plugin install downloads the release binary"). Tagging is automatic via
