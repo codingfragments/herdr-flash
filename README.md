@@ -72,6 +72,13 @@ version allowed these per-keybind; the Herdr port collapses them to global,
 matching the sister `herdr-zextract` port's philosophy — see
 [`doc/config-reference.md`](doc/config-reference.md) for the rationale).
 
+## Hosts
+
+One binary, one config (`~/.config/flash/config.toml`) under both
+multiplexers: **Herdr** via the plugin manifest, **Rex** via the Lua
+launcher in [`rex/flash.lua`](rex/flash.lua) (`ctrl+s>shift+s`) —
+see [`doc/rex.md`](doc/rex.md).
+
 ## Keybinding
 
 The plugin ships four ready-to-bind actions, bound via
