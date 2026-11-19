@@ -50,13 +50,11 @@ Optional — the plugin works with zero config, using the built-in
 `default` profile (`depths = ["200", "5000", "unlimited", "viewport"]`).
 To change the scrollback depth cycle, the label charset, the line-jump
 scheme, or the theme colors, copy [`config.example.toml`](config.example.toml)
-to:
-
-```sh
-herdr plugin config-dir herdr-flash   # prints the target directory
-```
-
-as `config.toml`. Full schema: [`doc/config-reference.md`](doc/config-reference.md).
+to `~/.config/flash/config.toml` (or `$XDG_CONFIG_HOME/flash/`, or any
+path you point `$FLASH_CONFIG` at; the old herdr location is still read
+as a fallback). `[host.<name>]` tables override `scroll_follow` /
+`key_debounce_ms` for one multiplexer only. Full schema:
+[`doc/config-reference.md`](doc/config-reference.md).
 
 | Key | Default | Description |
 |---|---|---|

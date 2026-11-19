@@ -30,21 +30,10 @@ use ratatui::Terminal;
 
 use render::Theme;
 
-/// Debounce window for identical consecutive key events.
-///
-/// Herdr's popup PTY runs in legacy keyboard mode, where crossterm can't
-/// distinguish a genuine press from an OS key-repeat or a flaky
-/// double-delivery — every key event arrives as `KeyEventKind::Press`.
-/// A single tap can therefore produce two `Press` events and fire the
-/// bound action twice (visible as the cursor moving to its first stop,
-/// then jumping again). We skip an identical key+modifiers event that
-/// arrives within this window of the previous one. Different keys always
-/// pass; legitimate rapid distinct-key input is unaffected. Tuned to
-/// catch near-instant duplicate delivery without eating deliberate
-/// fast double-taps (a human double-tap is ~100ms+ apart).
-const KEY_DEBOUNCE: Duration = Duration::from_millis(40);
+// Same-key debounce: see `Config::key_debounce_ms` (default 40 ms,
+// `[host.<name>]`-overridable) — herdr's popup keyboard mode
+// double-delivers; hosts with clean key events can set 0.
 
-/// Read the source pane's scrollback via `pane.read` with the given
 /// Read the scrollback of the pane this popup was opened over, via
 /// [`Host::read_pane`] with `ReadFormat::Ansi`, so the text carries
 /// raw SGR escapes. The caller parses these into per-char ratatui
@@ -2208,7 +2197,13 @@ fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut State,
 ) -> io::Result<()> {
-    // Last key event processed, for same-key debounce (see KEY_DEBOUNCE).
+    // Last key event processed, for same-key debounce (see KEY_DEBOUNCE;
+    // the config can shrink the window for hosts with clean key events).
+    let debounce = if state.config.key_debounce_ms > 0 {
+        Duration::from_millis(state.config.key_debounce_ms)
+    } else {
+        Duration::ZERO
+    };
     let mut last_key: Option<(KeyCode, KeyModifiers, Instant)> = None;
 
     loop {
@@ -2246,7 +2241,7 @@ fn run_loop(
         // presses. Different keys always pass.
         let now = Instant::now();
         let is_duplicate = last_key.is_some_and(|(code, mods, when)| {
-            code == key.code && mods == key.modifiers && now.duration_since(when) < KEY_DEBOUNCE
+            code == key.code && mods == key.modifiers && now.duration_since(when) < debounce
         });
         last_key = Some((key.code, key.modifiers, now));
         if is_duplicate {
@@ -2532,7 +2527,8 @@ fn main() {
 
         // Load config (Phase 9): profiles, labels, line_labels, theme.
         // Missing/unset/parse-error → built-in defaults, never crash.
-        let config = config::load();
+        // The running host's [host.<name>] overrides apply.
+        let config = config::load(host.name());
 
         // Initial grab at the active profile's first depth.
         let depth = config.profiles[config.current_profile]

@@ -1,6 +1,9 @@
 # herdr-flash configuration
 #
-# Place this file at $HERDR_PLUGIN_CONFIG_DIR/config.toml and edit it.
+# Place this file at ~/.config/flash/config.toml and edit it
+# ($XDG_CONFIG_HOME/flash/ if you set XDG_CONFIG_HOME; or point
+# $FLASH_CONFIG at any path; the old herdr location is still read as a
+# fallback).
 # Missing keys fall back to the built-in defaults shown below.
 # A missing or malformed config.toml never crashes the plugin — parse
 # errors are reported on stderr and built-in defaults are used.

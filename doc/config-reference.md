@@ -1,12 +1,17 @@
 # Configuration reference
 
-`herdr-flash` reads `$HERDR_PLUGIN_CONFIG_DIR/config.toml` once at
-startup (config is a per-invocation snapshot — no live reload while the
-popup is open). Find your config dir with:
+`herdr-flash` reads one `config.toml` once at startup (config is a
+per-invocation snapshot — no live reload while the popup is open). The
+first of these that exists wins:
 
-```sh
-herdr plugin config-dir herdr-flash
-```
+1. `$FLASH_CONFIG` — an explicit file. When set, it is the only place
+   looked at.
+2. `$XDG_CONFIG_HOME/flash/config.toml` (absolute `XDG_CONFIG_HOME`
+   only), else `~/.config/flash/config.toml` — the normal location,
+   shared by every multiplexer the plugin runs under.
+3. `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — the legacy herdr location
+   (`herdr plugin config-dir herdr-flash`), read as a fallback so
+   existing setups keep working. Move the file to (2) when convenient.
 
 If the file is missing, or fails to parse, built-in defaults are used —
 a broken config never crashes the plugin (a parse error is reported on
@@ -163,6 +168,30 @@ Mouse-wheel and keyboard scroll (outside copy mode) are tracked
 correctly.
 
 ---
+
+## `key_debounce_ms` — same-key debounce window
+
+```toml
+key_debounce_ms = 40
+```
+
+Default 40 ms: an identical key event arriving within this window of
+the previous one is skipped (herdr's popup keyboard mode double-
+delivers; a human double-tap is ~100 ms apart, so it still registers).
+Hosts whose popups deliver clean, distinct key events can set 0.
+
+## `[host.<name>]` — per-multiplexer overrides
+
+```toml
+[host.rex]
+scroll_follow = "off"      # Rex scrolls client-side; the modes above
+                           # need the host's scroll offset, so force off
+key_debounce_ms = 0        # Rex's keyboard mode delivers distinct events
+```
+
+Supported keys: `scroll_follow` and `key_debounce_ms` — they replace the
+root values when running under that host (`herdr` / `rex`); other hosts'
+tables are ignored, and other keys under `[host.<name>]` warn on stderr.
 
 ## `[profiles.<name>]` — per-keybind depth cycle
 

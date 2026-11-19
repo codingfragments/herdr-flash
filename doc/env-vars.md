@@ -25,7 +25,10 @@ config:
 | --- | --- | --- |
 | `HERDR_SOCKET_PATH` | Herdr | Unix socket path for the Herdr API (`pane.read`, `pane.send_text`). Required. |
 | `HERDR_PLUGIN_CONTEXT_JSON` | Herdr | Launch context: `focused_pane_id`, `focused_pane_cwd`, `tab_id`, `workspace_id`, `selected_text`, `clicked_url`, `invocation_source`. The plugin reads `focused_pane_id` to know which pane to grab scrollback from and insert text into. |
-| `HERDR_PLUGIN_CONFIG_DIR` | Herdr | Directory where the plugin's `config.toml` lives. The plugin reads `$HERDR_PLUGIN_CONFIG_DIR/config.toml` at launch. |
+| `HERDR_PLUGIN_CONFIG_DIR` | Herdr | Legacy config dir: the plugin reads its `config.toml` only after `~/.config/flash/config.toml` (and `$FLASH_CONFIG`) — see [`config-reference.md`](config-reference.md). |
+| `FLASH_CONFIG` | this plugin | An explicit config file, used instead of the normal lookup (see [`config-reference.md`](config-reference.md)). |
+| `FLASH_PROFILE` | this plugin | Selects the named `[profiles.<n>]` depth cycle at launch. |
+| `FLASH_HOST` | this plugin | Forces the multiplexer host (`herdr`/`rex`) instead of detection; set by launchers. |
 
 `HERDR_ACTIVE_PANE_ID` is a fallback for manual dev-testing when
 `HERDR_PLUGIN_CONTEXT_JSON` is not set (e.g. running the binary outside

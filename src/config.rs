@@ -1,18 +1,19 @@
-//! Config loader, adapted to Herdr's TOML model.
+//! User config for herdr-flash, loaded once at startup from the first
+//! config file that exists (see [`locate`]): `$FLASH_CONFIG`, else
+//! `$XDG_CONFIG_HOME/flash/config.toml` (`~/.config/flash/config.toml`),
+//! else the legacy herdr location `$HERDR_PLUGIN_CONFIG_DIR/config.toml`.
+//! Optional `[host.<name>]` keys override `scroll_follow` /
+//! `key_debounce_ms` for one multiplexer host (see
+//! [`apply_host_overrides`]).
+
+//! Layering (Phase 9 scope, extended by the Rex port): global keys
+//! (`log_level`, `labels`, `line_labels`, the 17 `color_*` theme roles),
+//! per-keybind profiles (`[profiles.<name>]` -> `depths`, selected at
+//! launch by `FLASH_PROFILE`), and `[host.<name>]` overrides for one
+//! multiplexer (`scroll_follow`, `key_debounce_ms`).
 //!
-//! Phase 9 scope: loads `$HERDR_PLUGIN_CONFIG_DIR/config.toml` once per
-//! launch. Three layers, mirroring the sister `herdr-zextract` port:
-//!
-//! - **Global** (top-level): `log_level`, `labels` (word-jump charset),
-//!   `line_labels` (`directional`/`unified`), and the 17 `color_*` theme
-//!   roles (hex `#rrggbb`, Catppuccin Macchiato defaults).
-//! - **Per-keybind profiles** (`[profiles.<name>]`): `depths` — the
-//!   scrollback-depth cycle list for `g`. Selected at launch by
-//!   `FLASH_PROFILE=<name>`. A built-in `default` profile carries
-//!   `["viewport", "200", "2000"]`.
-//!
-//! Missing/unset/parse-error → built-in defaults, never crash; parse errors
-//! reported on stderr.
+//! Missing/unset/parse-error -> built-in defaults, never crash; parse
+//! errors reported on stderr.
 
 use crate::render::{parse_hex_color, Theme};
 
@@ -121,6 +122,11 @@ pub struct Config {
     pub current_profile: usize,
     /// Initial-view scroll-follow mode (default `Off`). See [`ScrollFollow`].
     pub scroll_follow: ScrollFollow,
+    /// Debounce window (ms) for identical consecutive key events — a
+    /// workaround for popup keyboard quirks (herdr's legacy keyboard
+    /// mode double-delivers; hosts with clean key events can set 0 via
+    /// `[host.<name>].key_debounce_ms`). See `KEY_DEBOUNCE` in main.rs.
+    pub key_debounce_ms: u64,
 }
 
 impl Default for Config {
@@ -136,6 +142,7 @@ impl Default for Config {
             }],
             current_profile: 0,
             scroll_follow: ScrollFollow::Off,
+            key_debounce_ms: 40,
         }
     }
 }
@@ -161,23 +168,19 @@ fn find_profile(profiles: &[Profile], name: &str) -> Option<usize> {
         .position(|p| p.name.eq_ignore_ascii_case(name))
 }
 
-/// Load config from `$HERDR_PLUGIN_CONFIG_DIR/config.toml`, falling back
-/// to built-in defaults on any error (missing file, unreadable, parse
-/// error). Parse errors are reported on stderr. The `FLASH_PROFILE` env
-/// var selects the active profile at launch (falls back to "default").
-pub fn load() -> Config {
+/// Load the first config file [`locate`] finds, with the running
+/// host's `[host.<host>]` overrides applied. `host` is the multiplexer
+/// the tool runs under (`"herdr"` / `"rex"`). Missing file, unreadable
+/// file or a parse error all fall back to built-in defaults — a broken
+/// config must never crash the popup. The `FLASH_PROFILE` env var
+/// selects the active profile at launch (falls back to "default").
+pub fn load(host: &str) -> Config {
     let mut config = Config::default();
 
-    let config_dir = match std::env::var("HERDR_PLUGIN_CONFIG_DIR") {
-        Ok(dir) => dir,
-        Err(_) => {
-            // No config dir env — use defaults, select profile by FLASH_PROFILE.
-            select_profile(&mut config);
-            return config;
-        }
+    let Some(config_path) = location().path else {
+        select_profile(&mut config);
+        return config;
     };
-
-    let config_path = std::path::Path::new(&config_dir).join("config.toml");
     let text = match std::fs::read_to_string(&config_path) {
         Ok(t) => t,
         Err(e) => {
@@ -200,12 +203,128 @@ pub fn load() -> Config {
         }
     };
 
+    let toml_value = apply_host_overrides(toml_value, host);
     apply_toml(&mut config, &toml_value);
     select_profile(&mut config);
     config
 }
 
-/// Select the active profile by `FLASH_PROFILE` env (falls back to "default").
+/// `[host.<name>]` can override, for one multiplexer only, the keys
+/// listed here — everything else under `[host.<name>]` is ignored with
+/// a warning.
+const HOST_OVERRIDE_KEYS: &[&str] = &["scroll_follow", "key_debounce_ms"];
+
+/// Take the `[host]` table out of `root` and overlay this host's
+/// `[host.<host>]` keys over the root keys (a root-level scalar is
+/// replaced; anything but a scalar in the override is a warning and
+/// ignored). Other hosts' sections are dropped silently. Returns the
+/// merged value.
+fn apply_host_overrides(mut root: toml::Value, host: &str) -> toml::Value {
+    let Some(table) = root.as_table_mut() else {
+        return root;
+    };
+    let Some(hosts) = table.remove("host") else {
+        return root;
+    };
+    let toml::Value::Table(mut hosts) = hosts else {
+        eprintln!("herdr-flash: ignored `host`: expected a table like [host.rex]");
+        return root;
+    };
+    let Some(ours) = hosts.remove(host) else {
+        return root;
+    };
+    let toml::Value::Table(ours) = ours else {
+        eprintln!("herdr-flash: ignored [host.{host}]: expected a table");
+        return root;
+    };
+    for (key, value) in ours {
+        if !HOST_OVERRIDE_KEYS.contains(&key.as_str()) {
+            eprintln!(
+                "herdr-flash: ignored [host.{host}.{key}]: host overrides support only {}",
+                HOST_OVERRIDE_KEYS.join(", ")
+            );
+            continue;
+        }
+        if !matches!(value, toml::Value::Table(_) | toml::Value::Array(_)) {
+            table.insert(key, value);
+        } else {
+            eprintln!("herdr-flash: ignored [host.{host}.{key}]: expected a scalar value");
+        }
+    }
+    root
+}
+
+/// The environment [`locate`] works from — plain values, so the lookup
+/// rules are unit-testable without touching the process environment.
+#[derive(Debug, Clone, Default)]
+pub struct ConfigEnv {
+    /// `$FLASH_CONFIG`: an explicit config file.
+    pub explicit: Option<std::path::PathBuf>,
+    pub xdg_config_home: Option<std::path::PathBuf>,
+    pub home: Option<std::path::PathBuf>,
+    /// `$HERDR_PLUGIN_CONFIG_DIR` (legacy herdr location).
+    pub herdr_plugin_dir: Option<std::path::PathBuf>,
+}
+
+impl ConfigEnv {
+    fn from_process_env() -> Self {
+        let path_var = |name: &str| {
+            std::env::var_os(name)
+                .filter(|v| !v.is_empty())
+                .map(std::path::PathBuf::from)
+        };
+        Self {
+            explicit: path_var("FLASH_CONFIG"),
+            xdg_config_home: path_var("XDG_CONFIG_HOME"),
+            home: path_var("HOME"),
+            herdr_plugin_dir: path_var("HERDR_PLUGIN_CONFIG_DIR"),
+        }
+    }
+}
+
+/// The config file in use, if one exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigLocation {
+    pub path: Option<std::path::PathBuf>,
+}
+
+/// Config lookup:
+/// 1. `explicit` (`$FLASH_CONFIG`) — used as given, no fallback.
+/// 2. `$XDG_CONFIG_HOME/flash/config.toml` (absolute only, per the XDG
+///    spec), else `~/.config/flash/config.toml` — the normal location,
+///    shared by every multiplexer the tool runs under.
+/// 3. `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — the legacy herdr
+///    location, read as a fallback so existing setups keep working.
+///
+/// The first file that exists wins.
+pub fn locate(env: &ConfigEnv, exists: impl Fn(&std::path::Path) -> bool) -> ConfigLocation {
+    if let Some(explicit) = &env.explicit {
+        return ConfigLocation {
+            path: exists(explicit).then(|| explicit.clone()),
+        };
+    }
+    let neutral = env
+        .xdg_config_home
+        .as_ref()
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("flash/config.toml"))
+        .or_else(|| {
+            env.home
+                .as_ref()
+                .map(|h| h.join(".config/flash/config.toml"))
+        });
+    let legacy = env.herdr_plugin_dir.as_ref().map(|d| d.join("config.toml"));
+    let candidates: Vec<std::path::PathBuf> = [neutral, legacy].into_iter().flatten().collect();
+    ConfigLocation {
+        path: candidates.into_iter().find(|p| exists(p)),
+    }
+}
+
+/// [`locate`] against the real environment and filesystem.
+pub fn location() -> ConfigLocation {
+    locate(&ConfigEnv::from_process_env(), |p| p.is_file())
+}
+
 fn select_profile(config: &mut Config) {
     let name = std::env::var("FLASH_PROFILE").unwrap_or_else(|_| "default".to_string());
     if let Some(idx) = find_profile(&config.profiles, &name) {
@@ -235,6 +354,14 @@ fn apply_toml(config: &mut Config, root: &toml::Value) {
     }
     if let Some(v) = table.get("line_labels").and_then(toml::Value::as_str) {
         config.line_labels_unified = matches!(v.trim(), "unified" | "custom" | "true" | "on");
+    }
+    if let Some(v) = table
+        .get("key_debounce_ms")
+        .and_then(toml::Value::as_integer)
+    {
+        if v >= 0 {
+            config.key_debounce_ms = v as u64;
+        }
     }
     if let Some(v) = table.get("scroll_follow").and_then(toml::Value::as_str) {
         match parse_scroll_follow(v) {
@@ -491,5 +618,138 @@ depths = []
     #[test]
     fn default_scroll_follow_is_off() {
         assert_eq!(Config::default().scroll_follow, ScrollFollow::Off);
+    }
+
+    #[test]
+    fn default_key_debounce_is_40ms() {
+        assert_eq!(Config::default().key_debounce_ms, 40);
+    }
+
+    // ── Config location (Rex port Phase 2) ─────────────────────────
+
+    fn env(
+        explicit: Option<&str>,
+        xdg: Option<&str>,
+        home: Option<&str>,
+        herdr: Option<&str>,
+    ) -> ConfigEnv {
+        ConfigEnv {
+            explicit: explicit.map(std::path::PathBuf::from),
+            xdg_config_home: xdg.map(std::path::PathBuf::from),
+            home: home.map(std::path::PathBuf::from),
+            herdr_plugin_dir: herdr.map(std::path::PathBuf::from),
+        }
+    }
+
+    fn existing<'a>(files: &'a [&'a str]) -> impl Fn(&std::path::Path) -> bool + 'a {
+        move |p: &std::path::Path| files.iter().any(|f| std::path::Path::new(f) == p)
+    }
+
+    #[test]
+    fn locate_prefers_the_neutral_location_over_legacy() {
+        let e = env(None, None, Some("/h"), Some("/herdr/cfg"));
+        let loc = locate(
+            &e,
+            existing(&["/h/.config/flash/config.toml", "/herdr/cfg/config.toml"]),
+        );
+        assert_eq!(
+            loc.path,
+            Some(std::path::PathBuf::from("/h/.config/flash/config.toml"))
+        );
+    }
+
+    #[test]
+    fn locate_falls_back_to_the_legacy_herdr_location() {
+        let e = env(None, None, Some("/h"), Some("/herdr/cfg"));
+        let loc = locate(&e, existing(&["/herdr/cfg/config.toml"]));
+        assert_eq!(
+            loc.path,
+            Some(std::path::PathBuf::from("/herdr/cfg/config.toml"))
+        );
+    }
+
+    #[test]
+    fn locate_uses_absolute_xdg_config_home_only() {
+        let e = env(None, Some("/x"), Some("/h"), None);
+        assert_eq!(
+            locate(&e, existing(&["/x/flash/config.toml"])).path,
+            Some(std::path::PathBuf::from("/x/flash/config.toml"))
+        );
+        let e = env(None, Some("rel"), Some("/h"), None);
+        assert_eq!(
+            locate(&e, existing(&["/h/.config/flash/config.toml"])).path,
+            Some(std::path::PathBuf::from("/h/.config/flash/config.toml"))
+        );
+    }
+
+    #[test]
+    fn locate_explicit_wins_and_does_not_fall_back() {
+        let e = env(Some("/my/flash.toml"), None, Some("/h"), Some("/herdr/cfg"));
+        let loc = locate(
+            &e,
+            existing(&["/h/.config/flash/config.toml", "/herdr/cfg/config.toml"]),
+        );
+        assert_eq!(loc.path, None);
+        let loc = locate(&e, existing(&["/my/flash.toml"]));
+        assert_eq!(loc.path, Some(std::path::PathBuf::from("/my/flash.toml")));
+    }
+
+    // ── [host.<name>] overrides ────────────────────────────────────
+
+    #[test]
+    fn host_overrides_apply_for_the_running_host_only() {
+        let root: toml::Value = toml::from_str(
+            r#"
+scroll_follow = "offset"
+key_debounce_ms = 40
+
+[host.rex]
+scroll_follow = "off"
+key_debounce_ms = 0
+
+[host.herdr]
+key_debounce_ms = 60
+
+[host.rex.labels]
+"#,
+        )
+        .unwrap();
+        let mut config = Config::default();
+        let merged = apply_host_overrides(root, "rex");
+        apply_toml(&mut config, &merged);
+        assert_eq!(config.scroll_follow, ScrollFollow::Off);
+        assert_eq!(config.key_debounce_ms, 0);
+        // The other host's values never apply.
+        let merged = apply_host_overrides(
+            toml::from_str::<toml::Value>(
+                r#"
+scroll_follow = "offset"
+[host.herdr]
+key_debounce_ms = 60
+[host.rex]
+scroll_follow = "off"
+"#,
+            )
+            .unwrap(),
+            "herdr",
+        );
+        let mut config = Config::default();
+        apply_toml(&mut config, &merged);
+        assert_eq!(config.scroll_follow, ScrollFollow::Offset);
+        assert_eq!(config.key_debounce_ms, 60);
+    }
+
+    #[test]
+    fn key_debounce_ms_parses_from_the_root() {
+        let mut config = Config::default();
+        let root: toml::Value = toml::from_str("key_debounce_ms = 25").unwrap();
+        apply_toml(&mut config, &root);
+        assert_eq!(config.key_debounce_ms, 25);
+        // and a host override beats the root
+        let root: toml::Value =
+            toml::from_str("key_debounce_ms = 25\n[host.rex]\nkey_debounce_ms = 0\n").unwrap();
+        let mut config = Config::default();
+        apply_toml(&mut config, &apply_host_overrides(root, "rex"));
+        assert_eq!(config.key_debounce_ms, 0);
     }
 }

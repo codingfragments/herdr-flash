@@ -133,14 +133,19 @@ below verbatim)
 
 Status: ☐ not started
 
-- [ ] Lookup order (same scheme as zextract):
-  1. `$FLASH_CONFIG`
-  2. `$XDG_CONFIG_HOME/flash/config.toml` → `~/.config/flash/config.toml`
-  3. `$HERDR_PLUGIN_CONFIG_DIR/config.toml` (legacy)
-- [ ] Optional `[host.rex]` / `[host.herdr]` override tables (start with
-  `scroll_follow`, `key_debounce_ms` only).
-- [ ] Docs: `doc/config-reference.md`, `doc/env-vars.md`, README,
-  `config.example.toml`.
+- [x] Lookup order (same scheme as zextract; `config::locate`, pure
+  and unit-tested): `$FLASH_CONFIG` → `$XDG_CONFIG_HOME/flash/config.toml`
+  (absolute only) / `~/.config/flash/config.toml` → legacy
+  `$HERDR_PLUGIN_CONFIG_DIR/config.toml`.
+- [x] `[host.<name>]` override tables for `scroll_follow` and the new
+  `key_debounce_ms` (root-level scalars, replacing the root values for
+  that host only; other keys warn). `key_debounce_ms` replaces the
+  hard-coded 40 ms `KEY_DEBOUNCE` — the event loop now reads the
+  config, so Rex can set 0 via `[host.rex]` when its keyboard mode
+  delivers distinct events (spike S2 pending).
+- [x] Docs: `doc/config-reference.md` (lookup order, debounce,
+  host-override sections), `doc/env-vars.md`, README,
+  `config.example.toml` header. 117 tests green, clippy/fmt clean.
 
 ### Phase 3 — Rex support in flash — `phase/rex-3-rex-host`
 
