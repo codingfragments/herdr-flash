@@ -30,6 +30,49 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   fully automatic on release-PR merge; manual tagging is a fallback
   only.
 
+## [0.5.0] - 2026-11-19
+
+The Rex release: one binary, one config, two multiplexers, on the
+shared [`muxhost`](https://github.com/codingfragments/muxhost) crate.
+See `rex-migration.md` for the plan.
+
+### Added
+
+- **Rex support** (superlogical's terminal multiplexer): the same
+  binary runs under herdr and Rex (`FLASH_HOST` explicit, env-based
+  detection otherwise). All multiplexer access goes through `muxhost`
+  (v0.1.0, extracted from herdr-zextract).
+  - Colored reads via `rex capture --format=vt`; `vt_prepare` expands
+    cursor-forward runs to spaces (ansi-to-tui drops them), keeps SGR,
+    strips OSC/other CSI — columns and colors line up.
+  - `rex/flash.lua`: the Rex launcher (copy to
+    `~/.config/rex/plugins/flash.lua`), binding `ctrl+s>shift+s`,
+    preflight with `--host-api` check, and a one-shot focus-return
+    watcher for the popup close. Guide: `doc/rex.md`.
+- `--version` / `--host-api` flags.
+- Copy falls back to **OSC 52** when there is no system clipboard
+  (headless / remote hosts).
+
+### Changed
+
+- **Config location is neutral**: `$FLASH_CONFIG`, else
+  `~/.config/flash/config.toml`, else the legacy
+  `$HERDR_PLUGIN_CONFIG_DIR/config.toml` fallback. One file serves
+  both hosts.
+- **`[host.<name>]` config tables** override `scroll_follow` and the
+  new `key_debounce_ms` for one multiplexer.
+- `key_debounce_ms` replaces the hard-coded 40 ms debounce; unset means
+  the host's keyboard mode decides (`Caps::legacy_keyboard`).
+- **Scroll-follow is off under Rex** (client-side scrolling; the host
+  exposes no viewport offset).
+
+### Herdr install
+
+- `herdr plugin install` needs **no Rust toolchain** for released
+  versions: `[[build]]` runs `bin/fetch-binary` (download + sha256
+  check, `cargo build --release` fallback); the popup starts via
+  `bin/flash-launch` (pins `FLASH_HOST=herdr`).
+
 ## [0.4.0] - 2026-10-16
 
 ### Added
