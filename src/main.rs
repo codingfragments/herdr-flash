@@ -11,7 +11,8 @@ mod decor;
 mod flash;
 mod render;
 mod search;
-mod socket_client;
+
+use muxhost::{Host, ReadFormat, ReadSource, ScrollInfo};
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -43,153 +44,47 @@ use render::Theme;
 /// fast double-taps (a human double-tap is ~100ms+ apart).
 const KEY_DEBOUNCE: Duration = Duration::from_millis(40);
 
-// ── Launch context ────────────────────────────────────────────────────────────
-
-/// Launch context: which pane this popup was opened relative to.
-struct LaunchContext {
-    focused_pane_id: String,
-}
-
-/// Reads the launch context from `HERDR_PLUGIN_CONTEXT_JSON` (set by Herdr
-/// for a real plugin-pane invocation). Falls back to `HERDR_ACTIVE_PANE_ID`
-/// for manual dev-testing.
-fn launch_context() -> Result<LaunchContext, String> {
-    if let Ok(context_json) = std::env::var("HERDR_PLUGIN_CONTEXT_JSON") {
-        let context: serde_json::Value = serde_json::from_str(&context_json)
-            .map_err(|e| format!("invalid context JSON: {e}"))?;
-        let focused_pane_id = context
-            .get("focused_pane_id")
-            .and_then(|v| v.as_str())
-            .ok_or(
-                "context JSON has no focused_pane_id (nothing was focused before this popup opened)",
-            )?
-            .to_string();
-        return Ok(LaunchContext { focused_pane_id });
-    }
-    let focused_pane_id = std::env::var("HERDR_ACTIVE_PANE_ID").map_err(|_| {
-        "neither HERDR_PLUGIN_CONTEXT_JSON nor HERDR_ACTIVE_PANE_ID is set".to_string()
-    })?;
-    Ok(LaunchContext { focused_pane_id })
-}
-
 /// Read the source pane's scrollback via `pane.read` with the given
-/// `Depth`, requesting `format = "ansi"` + `strip_ansi = false` so the
-/// response carries raw SGR escapes. The caller parses these into
-/// per-char ratatui `Style` cells via `parse_ansi_lines` — see the
-/// "Data model" note in PLANNING.md §11.
+/// Read the scrollback of the pane this popup was opened over, via
+/// [`Host::read_pane`] with `ReadFormat::Ansi`, so the text carries
+/// raw SGR escapes. The caller parses these into per-char ratatui
+/// `Style` cells via `parse_ansi_lines` — see the "Data model" note in
+/// PLANNING.md §11.
 ///
-/// Depth mapping (per §5/§12):
-/// - `Depth::Viewport` → `source = "visible"` (just the viewport).
-/// - `Depth::Lines(n)` → `source = "recent_unwrapped"` + `lines = n`.
-/// - `Depth::Unlimited` → `source = "recent_unwrapped"` with no `lines`
-///   cap (grabs everything the terminal has).
+/// Depth mapping (per §5/§12): `Depth::Viewport` → the viewport;
+/// `Depth::Lines(n)` → the last n scrollback lines; `Depth::Unlimited`
+/// → everything the terminal holds.
 fn read_scrollback(
-    socket_path: &str,
+    host: &dyn Host,
     pane_id: &str,
     depth: &config::Depth,
 ) -> Result<String, String> {
-    let params = match depth {
-        config::Depth::Viewport => serde_json::json!({
-            "pane_id": pane_id,
-            "source": "visible",
-            "format": "ansi",
-            "strip_ansi": false,
-        }),
-        config::Depth::Lines(n) => serde_json::json!({
-            "pane_id": pane_id,
-            "source": "recent_unwrapped",
-            "lines": n,
-            "format": "ansi",
-            "strip_ansi": false,
-        }),
-        config::Depth::Unlimited => serde_json::json!({
-            "pane_id": pane_id,
-            "source": "recent_unwrapped",
-            "format": "ansi",
-            "strip_ansi": false,
-        }),
+    let (source, lines) = match depth {
+        config::Depth::Viewport => (ReadSource::Viewport, None),
+        config::Depth::Lines(n) => (ReadSource::Scrollback, Some(*n)),
+        config::Depth::Unlimited => (ReadSource::Scrollback, None),
     };
-    let result = socket_client::request(socket_path, "pane.read", params)
-        .map_err(|e| format!("pane.read failed: {e}"))?;
-    result
-        .get("read")
-        .and_then(|v| v.get("text"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| "pane.read response had no \"read.text\" field".to_string())
+    host.read_pane(pane_id, source, ReadFormat::Ansi, lines)
 }
 
 // ── Source-pane scroll state (scroll-follow) ─────────────────────────────────
 
-/// The source pane's scroll position, as reported by `pane.get`'s
-/// `scroll` field (nullable in the schema, hence `Option` at the call
-/// site). All three fields are in **source screen-rows** — the unit the
-/// terminal itself uses, where a long wrapped line occupies multiple
-/// rows. The popup renders one unwrapped logical line per row, so these
-/// are only an approximation of the popup's logical-line space (see
-/// [`compute_scroll_anchor`] and PLANNING.md §11 "Data model").
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // max_offset/viewport_rows document the schema; read for diagnostics.
-struct PaneScrollInfo {
-    /// 0 = at the very bottom (showing the latest output); K > 0 = the
-    /// viewport's bottom edge is K screen-rows above the scrollback bottom.
-    offset_from_bottom: u64,
-    /// Total scrollback size in screen-rows.
-    max_offset_from_bottom: u64,
-    /// How many rows the source pane's viewport shows.
-    viewport_rows: u64,
-}
+/// The source pane's scroll position, in **source screen-rows** — the
+/// unit the terminal itself uses, where a long wrapped line occupies
+/// multiple rows. The popup renders one unwrapped logical line per
+/// row, so these are only an approximation of the popup's
+/// logical-line space (see [`compute_scroll_anchor`] and PLANNING.md
+/// §11 "Data model"). Read via [`Host::scroll_info`] — `Ok(None)`
+/// when the host cannot tell (herdr: a pane without scrollback;
+/// Rex: not available at all).
+type PaneScrollInfo = ScrollInfo;
 
-/// Read the source pane's scroll state via `pane.get`.
-///
-/// Returns `Ok(None)` if the pane has no `scroll` field (the schema
-/// marks it nullable). Returns `Err` only on socket/protocol failure —
-/// a missing `scroll` is a normal "no scrollback" condition, not an
-/// error, so the caller can fall back to the bottom-anchored default.
-fn read_pane_scroll(socket_path: &str, pane_id: &str) -> Result<Option<PaneScrollInfo>, String> {
-    let result = socket_client::request(
-        socket_path,
-        "pane.get",
-        serde_json::json!({ "pane_id": pane_id }),
-    )
-    .map_err(|e| format!("pane.get failed: {e}"))?;
-    let pane = result
-        .get("pane")
-        .ok_or_else(|| "pane.get response missing \"pane\"".to_string())?;
-    let Some(scroll) = pane.get("scroll") else {
-        return Ok(None);
-    };
-    let get_u64 = |key: &str| scroll.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-    Ok(Some(PaneScrollInfo {
-        offset_from_bottom: get_u64("offset_from_bottom"),
-        max_offset_from_bottom: get_u64("max_offset_from_bottom"),
-        viewport_rows: get_u64("viewport_rows"),
-    }))
-}
-
-/// Read the source pane's current viewport text as plain lines, via
-/// `pane.read source=visible` (text format, ANSI stripped).
-///
-/// These are the **wrapped screen-rows** the user actually sees. Used by
-/// `Content` scroll-follow to fingerprint-match a distinctive line back
-/// into the unwrapped capture. Returns `Err` on socket/protocol failure.
-fn read_visible_text(socket_path: &str, pane_id: &str) -> Result<Vec<String>, String> {
-    let result = socket_client::request(
-        socket_path,
-        "pane.read",
-        serde_json::json!({
-            "pane_id": pane_id,
-            "source": "visible",
-            "format": "text",
-            "strip_ansi": true,
-        }),
-    )
-    .map_err(|e| format!("pane.read(visible) failed: {e}"))?;
-    let text = result
-        .get("read")
-        .and_then(|v| v.get("text"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "pane.read(visible) response had no \"read.text\"".to_string())?;
+/// The source pane's current viewport text as plain wrapped lines
+/// (ANSI stripped) — what the user actually sees. Used by `Content`
+/// scroll-follow to fingerprint-match a distinctive line back into
+/// the unwrapped capture.
+fn read_visible_text(host: &dyn Host, pane_id: &str) -> Result<Vec<String>, String> {
+    let text = host.read_pane(pane_id, ReadSource::Viewport, ReadFormat::Plain, None)?;
     Ok(text.lines().map(String::from).collect())
 }
 
@@ -360,7 +255,7 @@ fn parse_ansi_lines(text: &str) -> Vec<Vec<StyledChar>> {
 /// Extract plain text (no styles) from a line of styled cells.
 ///
 /// This is the conversion contract for the action boundary: copy
-/// (`arboard`) and insert (`pane.send_text`) both target plain `String`,
+/// and insert both target plain `String`,
 /// so the styled-cell model used for rendering must be flattened back
 /// to text. Search and jump matching also operate on plain text
 /// extracted this way, not on the `Style` field.
@@ -558,11 +453,9 @@ struct State {
     theme: Theme,
     mode: Mode,
     message: Option<String>,
-    /// Socket path for `pane.send_text` (insert action, Phase 8) and
-    /// `pane.read` (re-grab on profile cycle, Phase 9).
-    socket_path: Option<String>,
-    /// Source pane id (from launch context) for `pane.send_text` / `pane.read`.
-    focused_pane_id: Option<String>,
+    /// The multiplexer the popup runs under (insert, re-grab). `None`
+    /// in tests; `main` sets it from `muxhost::detect("FLASH")`.
+    host: Option<Box<dyn Host>>,
     /// Runtime config (Phase 9): profiles, labels, line_labels scheme, theme.
     config: config::Config,
     /// Current depth index within the active profile's `depths` list.
@@ -585,8 +478,7 @@ impl Default for State {
             theme: Theme::default(),
             mode: Mode::Normal,
             message: None,
-            socket_path: None,
-            focused_pane_id: None,
+            host: None,
             config: config::Config::default(),
             current_depth: 0,
         }
@@ -1350,7 +1242,8 @@ impl State {
     // clipboard or the target pane (the conversion contract from the
     // ANSI-color data model).
 
-    /// `Enter` — copy the selection to the clipboard via `arboard`
+    /// `Enter` — copy the selection to the clipboard (muxhost — system
+    /// clipboard, OSC 52 fallback on headless hosts)
     /// (with detected decoration — box frames, number gutters —
     /// stripped) and close the popup. `P` copies the same selection
     /// verbatim (`action_copy_raw`). Warn (footer message, stay open) if
@@ -1364,16 +1257,10 @@ impl State {
                 return true;
             }
         };
-        match arboard::Clipboard::new() {
-            Ok(mut cb) => {
-                if let Err(e) = cb.set_text(&text) {
-                    self.message = Some(format!("Clipboard error: {e}"));
-                    return true;
-                }
-                false // close the popup
-            }
+        match muxhost::clipboard::copy(&text) {
+            Ok(()) => false, // close the popup
             Err(e) => {
-                self.message = Some(format!("Clipboard unavailable: {e}"));
+                self.message = Some(format!("Clipboard error: {e}"));
                 true
             }
         }
@@ -1393,16 +1280,10 @@ impl State {
                 return true;
             }
         };
-        match arboard::Clipboard::new() {
-            Ok(mut cb) => {
-                if let Err(e) = cb.set_text(&text) {
-                    self.message = Some(format!("Clipboard error: {e}"));
-                    return true;
-                }
-                false
-            }
+        match muxhost::clipboard::copy(&text) {
+            Ok(()) => false, // close the popup
             Err(e) => {
-                self.message = Some(format!("Clipboard unavailable: {e}"));
+                self.message = Some(format!("Clipboard error: {e}"));
                 true
             }
         }
@@ -1439,20 +1320,17 @@ impl State {
         }
     }
 
-    /// Send `text` to the source pane via `pane.send_text` and close.
-    /// Targets `focused_pane_id` from the launch context, regardless of
-    /// cursor position.
+    /// Send `text` to the source pane (host insert) and close.
+    /// Targets the launch context's source pane, regardless of cursor
+    /// position.
     fn do_insert(&mut self, text: String) {
-        if let (Some(socket_path), Some(pane_id)) = (&self.socket_path, &self.focused_pane_id) {
-            let params = serde_json::json!({
-                "pane_id": pane_id,
-                "text": text,
-            });
-            if let Err(e) = socket_client::request(socket_path, "pane.send_text", params) {
-                eprintln!("herdr-flash: pane.send_text failed: {e}");
+        if let Some(host) = &self.host {
+            let pane_id = host.source().pane_id.clone();
+            if let Err(e) = host.insert_text(&pane_id, &text) {
+                eprintln!("herdr-flash: insert failed: {e}");
             }
         } else {
-            eprintln!("herdr-flash: cannot insert — socket_path or focused_pane_id not set");
+            eprintln!("herdr-flash: cannot insert — no host");
         }
     }
 
@@ -1483,8 +1361,9 @@ impl State {
     /// Re-grab scrollback at the current depth and reset view state.
     fn regrab(&mut self) {
         let depth = self.current_depth();
-        if let (Some(socket_path), Some(pane_id)) = (&self.socket_path, &self.focused_pane_id) {
-            match read_scrollback(socket_path, pane_id, &depth) {
+        if let Some(host) = &self.host {
+            let pane_id = host.source().pane_id.clone();
+            match read_scrollback(host.as_ref(), &pane_id, &depth) {
                 Ok(text) => {
                     self.lines = parse_ansi_lines(&text);
                     if self.lines.is_empty() {
@@ -2646,9 +2525,10 @@ fn run_loop(
 
 fn main() {
     if let Err(message) = (|| {
-        let ctx = launch_context()?;
-        let socket_path = std::env::var("HERDR_SOCKET_PATH")
-            .map_err(|_| "HERDR_SOCKET_PATH is not set".to_string())?;
+        // Host detection: herdr or Rex (`FLASH_HOST` wins; env-based
+        // otherwise — see muxhost). The source pane comes with it.
+        let host: Box<dyn Host> = muxhost::detect("FLASH")?;
+        let source_pane = host.source().pane_id.clone();
 
         // Load config (Phase 9): profiles, labels, line_labels, theme.
         // Missing/unset/parse-error → built-in defaults, never crash.
@@ -2660,12 +2540,11 @@ fn main() {
             .first()
             .copied()
             .unwrap_or(config::Depth::Lines(200));
-        let text = read_scrollback(&socket_path, &ctx.focused_pane_id, &depth)?;
+        let text = read_scrollback(host.as_ref(), &source_pane, &depth)?;
 
         let mut state = State {
             lines: parse_ansi_lines(&text),
-            socket_path: Some(socket_path.clone()),
-            focused_pane_id: Some(ctx.focused_pane_id.clone()),
+            host: Some(host),
             config,
             current_depth: 0,
             ..State::default()
@@ -2681,7 +2560,7 @@ fn main() {
         // `compute_scroll_anchor` and PLANNING.md §11.
         let scroll_follow = state.config.scroll_follow;
         let scroll_info = if scroll_follow != config::ScrollFollow::Off {
-            match read_pane_scroll(&socket_path, &ctx.focused_pane_id) {
+            match state.host.as_ref().unwrap().scroll_info(&source_pane) {
                 Ok(s) => s,
                 Err(e) => {
                     // Non-fatal: fall back to bottom-anchored behavior.
@@ -2693,7 +2572,7 @@ fn main() {
             None
         };
         let visible_plain = if scroll_follow == config::ScrollFollow::Content {
-            match read_visible_text(&socket_path, &ctx.focused_pane_id) {
+            match read_visible_text(state.host.as_deref().unwrap(), &source_pane) {
                 Ok(v) => Some(v),
                 Err(e) => {
                     eprintln!("herdr-flash: {e}");
