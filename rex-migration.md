@@ -188,7 +188,7 @@ selection into the source block's prompt and closed the popup.
 
 ### Phase 4 — Rex launcher (`rex/flash.lua`) — `phase/rex-4-lua-launcher`
 
-Status: ☐ not started
+Status: ☑ done (2026-11-19, `phase/rex-4-lua-launcher`) — live-tested
 
 Reference implementation shipped in this repo as `rex/flash.lua`; the
 user copies/symlinks it to `~/.config/rex/plugins/flash.lua` and adds
