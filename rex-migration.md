@@ -90,14 +90,15 @@ edge cases.
 
 ### Phase 1 — `muxhost` crate + `HerdrHost` adoption (pure refactor) — `phase/rex-1-muxhost`
 
-Status: ☐ not started (blocked on herdr-zextract Rex Phase 3–4)
+Status: ☑ done (2026-11-19; the crate carries the extension sketch
+below verbatim)
 
-- [ ] Create repo `codingfragments/muxhost` (library crate, MIT, same CI
-  shape: fmt/clippy/test on macOS + Linux; no binaries, releases are
-  plain `vX.Y.Z` tags). Seed it with zextract's `src/host/` (trait,
-  `HerdrHost`, `RexHost`, `socket_client`).
-- [ ] Extend the trait for flash, as **optional capabilities** so hosts
-  without them stay honest:
+- [x] Create repo `codingfragments/muxhost` — library crate, MIT, CI on
+  Blacksmith runners, releases are plain tags. Seeded with zextract's
+  `src/host/`; zextract switched to it (zextract#48, patch release
+  v0.7.1).
+- [x] Extend the trait for flash, as **optional capabilities** so hosts
+  without them stay honest (as shipped in muxhost v0.1.0):
   ```rust
   pub enum ReadSource { Viewport, Scrollback }
   pub enum ReadFormat { Plain, Ansi }            // Rex: text | vt
@@ -114,16 +115,19 @@ Status: ☐ not started (blocked on herdr-zextract Rex Phase 3–4)
   }
   pub fn detect() -> Result<Box<dyn Host>, String>;
   ```
-- [ ] Clipboard helper in `muxhost` (arboard, OSC 52 fallback) — both
-  tools copy; keep it in one place.
-- [ ] herdr-flash: depend on `muxhost = { git = "…/muxhost", tag = "v0.1.0" }`;
-  move `read_scrollback`, `read_pane_scroll`, `read_visible_text`,
-  `do_insert`, `launch_context` onto it; `State` holds `Box<dyn Host>`
-  instead of `socket_path` / `focused_pane_id`. Delete `socket_client.rs`.
-- [ ] herdr-zextract: separate PR in that repo switching its in-repo
-  `host/` to `muxhost` (no behavior change).
-- [ ] No behavior change under Herdr; `cargo test` green; scroll-anchor
-  tests unchanged (they're pure).
+- [x] Clipboard helper in `muxhost` (arboard, OSC 52 fallback) — both
+  tools copy; kept in one place.
+- [x] herdr-flash: depends on `muxhost` (tag `v0.1.0`);
+  `read_scrollback` → `read_pane(Ansi)`, `read_visible_text` →
+  `read_pane(Viewport, Plain)`, `read_pane_scroll` → `scroll_info()`
+  (`PaneScrollInfo` is an alias of `ScrollInfo`), `do_insert` →
+  `insert_text`, `launch_context` + `HERDR_SOCKET_PATH` →
+  `muxhost::detect("FLASH")`, arboard copies → `muxhost::clipboard`
+  (OSC 52 fallback included, arboard dep dropped). `State` holds
+  `Option<Box<dyn Host>>`; `socket_client.rs` deleted.
+- [x] herdr-zextract: switched to `muxhost` (zextract#48; v0.7.1).
+- [x] No behavior change under Herdr; 110 tests green (scroll-anchor
+  tests unchanged), clippy/fmt clean.
 
 ### Phase 2 — neutral config location — `phase/rex-2-config-path`
 
