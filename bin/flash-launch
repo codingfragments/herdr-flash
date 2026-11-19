@@ -1,0 +1,27 @@
+#!/bin/sh
+# herdr-flash: start the binary for herdr's popup pane.
+#
+# Prefers the plugin's own build (target/release/, put there by
+# bin/fetch-binary during `herdr plugin install`, or by `just build` /
+# `just link` in a dev checkout), then a herdr-flash on PATH (e.g.
+# installed with mise for Rex). If neither exists, explain instead of
+# letting the popup flash shut.
+#
+# This wrapper is herdr's entry point only, so it pins the host: a
+# herdr running inside a Rex terminal (or the reverse) must not be
+# detected as the other multiplexer.
+FLASH_HOST=herdr
+export FLASH_HOST
+here=$(cd "$(dirname "$0")/.." && pwd)
+if [ -x "$here/target/release/herdr-flash" ]; then
+  exec "$here/target/release/herdr-flash" "$@"
+fi
+if command -v herdr-flash >/dev/null 2>&1; then
+  exec herdr-flash "$@"
+fi
+printf '\n  herdr-flash: no binary found.\n\n'
+printf '  Reinstall the plugin (herdr plugin install codingfragments/herdr-flash),\n'
+printf '  or install the binary: mise use -g github:codingfragments/herdr-flash\n\n'
+printf '  Press Enter to close. '
+read -r _
+exit 1

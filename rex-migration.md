@@ -149,30 +149,42 @@ Status: ☐ not started
 
 ### Phase 3 — Rex support in flash — `phase/rex-3-rex-host`
 
-Status: ☐ not started
+Status: ☑ done (2026-11-19, `phase/rex-3-rex-host`) — live-tested in a
+scratch Rex session
 
-- [ ] `RexHost::read_pane(…, Ansi, …)` → `capture --format=vt --unwrap`
-  (lives in `muxhost`; flash bumps the tag).
-- [ ] `parse_ansi_lines`: expand `CSI n C` → `n` spaces; ignore/skip all
-  non-SGR CSI and OSC sequences robustly; unit tests from recorded Rex
-  fixtures (`tests/fixtures/rex/*.vt`, incl. a `clear`ed pane, a pane
-  that ran a full-screen app, wide/emoji chars, hyperlinks).
-- [ ] Scroll-follow: when `caps.scroll_follow == false` force `Off`
-  silently (log at debug); document it.
-- [ ] Key debounce: `caps.legacy_keyboard` (herdr true, Rex per spike S2)
-  decides the default; config override wins.
-- [ ] If Rex delivers Shift-Enter distinctly (spike S2), consider
-  restoring it as an insert alias — keep `p` regardless.
-- [ ] `--version` and `--host-api` (integer, start at 1) for the Lua
-  launcher's compatibility check.
-- [ ] **Herdr install, option B** (copy from zextract's Phase 3 once it
-  has landed there):
-  - `bin/fetch-binary` with the asset name `herdr-flash-<triple>.tar.gz`;
-    `[[build]] command = ["sh", "bin/fetch-binary"]`.
-  - `bin/flash-launch`: exec `./target/release/herdr-flash` if present,
-    else `herdr-flash` on `PATH`, else an install hint; manifest
-    `[[panes]].command = ["sh", "bin/flash-launch"]`.
-  - Launcher actions pass `--env FLASH_HOST=herdr`.
+- [x] `RexHost::read_pane(…, Ansi, …)` → `capture --format=vt --unwrap`
+  (in `muxhost` v0.1.0 since the extraction; verified live: an
+  RGB-styled line renders with its exact color inside the popup).
+- [x] `vt_prepare` before `ansi-to-tui` (which *drops* cursor-forward,
+  confirmed by probe): `CSI n C` → n spaces, SGR kept verbatim, OSC
+  dropped (hyperlink *text* stays visible), other CSI and charset
+  escapes dropped. 4 unit tests (expansion, SGR, OSC/CSI shapes,
+  column alignment through `parse_ansi_lines`). The recorded full-
+  fixture set (cleared panes, full-screen apps, wide chars) stays open
+  for Phase 4 — the launcher's real use surfaces anything the unit
+  shapes miss.
+- [x] Scroll-follow: `main` forces `Off` when `!caps.scroll_follow`
+  (Rex scrolls client-side; the modes need the host's scroll offset).
+- [x] Key debounce: `key_debounce_ms` is `Option<u64>` — unset means
+  `caps.legacy_keyboard` decides (herdr → 40 ms; a host with distinct
+  key events → 0); explicit root / `[host.<name>]` values win. Spike
+  S2 (Rex's keyboard behavior in a floating layer) is checked when
+  Phase 4's launcher lands.
+- [ ] Shift-Enter as an insert alias: pending spike S2.
+- [x] `--version` and `--host-api` (`HOST_API` = 1), answered before
+  host detection.
+- [x] **Herdr install, option B** (copied from zextract's Phase 3):
+  `bin/fetch-binary` (`herdr-flash-<triple>.tar.gz`,
+  `FLASH_BUILD=source|download` forces one way) and `bin/flash-launch`
+  (plugin binary → PATH → install hint; pins `FLASH_HOST=herdr`);
+  manifest `[[build]]` / `[[panes]]` updated. The live
+  `herdr plugin install --ref` test happens at the v0.5.0 release,
+  like zextract.
+
+Live-tested under Rex (scratch session, binary run in a split with the
+launcher's env): popup opens over the source pane, vt colors render,
+line numbers, `k`/`Space`/`$` motion + selection, `p` inserted the
+selection into the source block's prompt and closed the popup.
 
 ### Phase 4 — Rex launcher (`rex/flash.lua`) — `phase/rex-4-lua-launcher`
 
