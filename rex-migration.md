@@ -132,7 +132,7 @@ below verbatim)
 
 ### Phase 2 — neutral config location — `phase/rex-2-config-path`
 
-Status: ☐ not started
+Status: ☑ done (PR #38, released in v0.5.0)
 
 - [x] Lookup order (same scheme as zextract; `config::locate`, pure
   and unit-tested): `$FLASH_CONFIG` → `$XDG_CONFIG_HOME/flash/config.toml`
@@ -248,7 +248,7 @@ Status: ☑ done (2026-11-19)
 | S4 | OSC 52 clipboard from a floating layer, local + remote — shared with zextract S2 | ☐ |
 | S5 | Live resize of the floating layer: does the ratatui app get SIGWINCH / correct size? | ☐ |
 | S6 | Any Rex API (server or client action) that reveals the client's scroll position? (expected: no) | ☐ |
-| S7 | `muxhost` as git dependency: CI in both tool repos fetches it fine (public repo, tag pin) | ☐ |
+| S7 | `muxhost` as git dependency: CI in both tool repos fetches it fine (public repo, tag pin) || ☑ 2026-11: yes. CI on `main` builds with muxhost as a tag-pinned git dependency (green through the v0.5.0 release) |
 
 ## Rex facts an agent needs (verified 2026-11, rex 0.1.0-preview.19, api rev 14)
 
