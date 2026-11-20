@@ -32,10 +32,44 @@ mise use -g github:codingfragments/herdr-flash   # pin a version in your dotfile
 require("plugins.flash")
 ```
 
+A binary installed with mise is only found if you also add a
+`lib/env.lua`; see [Environment](#environment-the-rex-cli-and-your-login-path)
+below.
+
 **3. Config** — `~/.config/flash/config.toml` serves both hosts. A
 `[host.rex]` table can override `scroll_follow` (forced `off` under Rex
 anyway — Rex scrolls client-side) and `key_debounce_ms` (0 by default
 under Rex if its keyboard mode delivers distinct events).
+
+## Environment: the `rex` CLI and your login PATH
+
+The launcher needs two things from your Rex config, because the Rex
+server is started by the macOS app with a minimal `PATH`
+(`/usr/bin:/bin:/usr/sbin:/sbin`, no Homebrew, no mise shims):
+
+| It needs | Without it |
+|---|---|
+| the **`rex` CLI's absolute path** | the popup opens, but `herdr-flash` cannot call back into Rex |
+| a **login `PATH`** that contains `herdr-flash` | the popup says `flash: herdr-flash not found on this host` |
+
+On a standard macOS install the CLI is found with no setup (the launcher
+falls back to the app bundle under your own `$HOME`). Its fallback
+`PATH`, though, has **no mise shims and no `~/.local/bin`**, so a binary
+installed with `mise use -g` is **not found until you add a
+`~/.config/rex/lib/env.lua`**. One file serves every Rex launcher:
+
+```sh
+mkdir -p ~/.config/rex/lib
+curl -fsSL https://raw.githubusercontent.com/codingfragments/muxhost/main/examples/rex/lib/env.lua \
+  -o ~/.config/rex/lib/env.lua
+```
+
+That sample finds the CLI and asks your login shell (fish, zsh, bash, …)
+for its `PATH`, with nothing tied to an account or a home directory. To
+pin values by hand instead, to check what it resolves to, or to
+troubleshoot, see the muxhost guide:
+[The Rex environment for launchers](https://github.com/codingfragments/muxhost/blob/main/doc/rex-environment.md).
+Reload your config afterwards (`ctrl+s>shift+r`).
 
 ## Binding
 
