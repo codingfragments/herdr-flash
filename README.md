@@ -76,8 +76,27 @@ matching the sister `herdr-zextract` port's philosophy — see
 
 One binary, one config (`~/.config/flash/config.toml`) under both
 multiplexers: **Herdr** via the plugin manifest, **Rex** via the Lua
-launcher in [`rex/flash.lua`](rex/flash.lua) (`ctrl+s>shift+s`) —
-see [`doc/rex.md`](doc/rex.md).
+launcher in [`rex/flash.lua`](rex/flash.lua).
+
+**Under Rex** there is no plugin manifest, so three things go in your
+Rex config. Details in [`doc/rex.md`](doc/rex.md):
+
+1. **The binary:** `mise use -g github:codingfragments/herdr-flash`.
+2. **The launcher:** copy [`rex/flash.lua`](rex/flash.lua) to
+   `~/.config/rex/plugins/flash.lua` and add
+   `require("plugins.flash")` to `init.lua` (binding `ctrl+s>shift+s`).
+3. **The environment:** the Rex server starts with a minimal `PATH`
+   (`/usr/bin:/bin:/usr/sbin:/sbin`: no Homebrew, no mise shims). The
+   launcher finds the `rex` CLI by itself on a standard install, but
+   **not a binary installed with mise** — for that, add a
+   `~/.config/rex/lib/env.lua` that exports your login `PATH` (and,
+   optionally, the `rex` CLI path). Without it the popup says
+   `herdr-flash not found on this host` even though the tool is installed.
+   A copyable sample, a check command and troubleshooting:
+   [Environment in `doc/rex.md`](doc/rex.md#environment-the-rex-cli-and-your-login-path).
+
+Reload the config afterwards (`ctrl+s>shift+r`); `lib/env.lua` is only
+read when the config loads.
 
 ## Keybinding
 
