@@ -1,6 +1,6 @@
 //! User config for herdr-flash, loaded once at startup from the first
 //! config file that exists (see [`locate`]): `$FLASH_CONFIG`, else
-//! `$XDG_CONFIG_HOME/flash/config.toml` (`~/.config/flash/config.toml`),
+//! `$XDG_CONFIG_HOME/cf-flash/config.toml` (`~/.config/cf-flash/config.toml`),
 //! else the legacy herdr location `$HERDR_PLUGIN_CONFIG_DIR/config.toml`.
 //! Optional `[host.<name>]` keys override `scroll_follow` /
 //! `key_debounce_ms` for one multiplexer host (see
@@ -290,8 +290,8 @@ pub struct ConfigLocation {
 
 /// Config lookup:
 /// 1. `explicit` (`$FLASH_CONFIG`) — used as given, no fallback.
-/// 2. `$XDG_CONFIG_HOME/flash/config.toml` (absolute only, per the XDG
-///    spec), else `~/.config/flash/config.toml` — the normal location,
+/// 2. `$XDG_CONFIG_HOME/cf-flash/config.toml` (absolute only, per the XDG
+///    spec), else `~/.config/cf-flash/config.toml` — the normal location,
 ///    shared by every multiplexer the tool runs under.
 /// 3. `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — the legacy herdr
 ///    location, read as a fallback so existing setups keep working.
@@ -307,11 +307,11 @@ pub fn locate(env: &ConfigEnv, exists: impl Fn(&std::path::Path) -> bool) -> Con
         .xdg_config_home
         .as_ref()
         .filter(|p| p.is_absolute())
-        .map(|p| p.join("flash/config.toml"))
+        .map(|p| p.join("cf-flash/config.toml"))
         .or_else(|| {
             env.home
                 .as_ref()
-                .map(|h| h.join(".config/flash/config.toml"))
+                .map(|h| h.join(".config/cf-flash/config.toml"))
         });
     let legacy = env.herdr_plugin_dir.as_ref().map(|d| d.join("config.toml"));
     let candidates: Vec<std::path::PathBuf> = [neutral, legacy].into_iter().flatten().collect();
@@ -650,11 +650,11 @@ depths = []
         let e = env(None, None, Some("/h"), Some("/herdr/cfg"));
         let loc = locate(
             &e,
-            existing(&["/h/.config/flash/config.toml", "/herdr/cfg/config.toml"]),
+            existing(&["/h/.config/cf-flash/config.toml", "/herdr/cfg/config.toml"]),
         );
         assert_eq!(
             loc.path,
-            Some(std::path::PathBuf::from("/h/.config/flash/config.toml"))
+            Some(std::path::PathBuf::from("/h/.config/cf-flash/config.toml"))
         );
     }
 
@@ -672,13 +672,13 @@ depths = []
     fn locate_uses_absolute_xdg_config_home_only() {
         let e = env(None, Some("/x"), Some("/h"), None);
         assert_eq!(
-            locate(&e, existing(&["/x/flash/config.toml"])).path,
-            Some(std::path::PathBuf::from("/x/flash/config.toml"))
+            locate(&e, existing(&["/x/cf-flash/config.toml"])).path,
+            Some(std::path::PathBuf::from("/x/cf-flash/config.toml"))
         );
         let e = env(None, Some("rel"), Some("/h"), None);
         assert_eq!(
-            locate(&e, existing(&["/h/.config/flash/config.toml"])).path,
-            Some(std::path::PathBuf::from("/h/.config/flash/config.toml"))
+            locate(&e, existing(&["/h/.config/cf-flash/config.toml"])).path,
+            Some(std::path::PathBuf::from("/h/.config/cf-flash/config.toml"))
         );
     }
 
@@ -687,7 +687,7 @@ depths = []
         let e = env(Some("/my/flash.toml"), None, Some("/h"), Some("/herdr/cfg"));
         let loc = locate(
             &e,
-            existing(&["/h/.config/flash/config.toml", "/herdr/cfg/config.toml"]),
+            existing(&["/h/.config/cf-flash/config.toml", "/herdr/cfg/config.toml"]),
         );
         assert_eq!(loc.path, None);
         let loc = locate(&e, existing(&["/my/flash.toml"]));

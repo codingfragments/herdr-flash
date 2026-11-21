@@ -1,7 +1,7 @@
 # herdr-flash configuration
 #
-# Place this file at ~/.config/flash/config.toml and edit it
-# ($XDG_CONFIG_HOME/flash/ if you set XDG_CONFIG_HOME; or point
+# Place this file at ~/.config/cf-flash/config.toml and edit it
+# ($XDG_CONFIG_HOME/cf-flash/ if you set XDG_CONFIG_HOME; or point
 # $FLASH_CONFIG at any path; the old herdr location is still read as a
 # fallback).
 # Missing keys fall back to the built-in defaults shown below.

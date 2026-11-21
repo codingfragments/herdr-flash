@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
+### Changed
+
+- **Config dir renamed: `~/.config/flash/` → `~/.config/cf-flash/`.**
+  The config file now lives at `~/.config/cf-flash/config.toml`
+  (or `$XDG_CONFIG_HOME/cf-flash/config.toml`). Move your existing
+  config once:
+
+  ```sh
+  mv ~/.config/flash ~/.config/cf-flash
+  ```
+
+  The legacy `$HERDR_PLUGIN_CONFIG_DIR/config.toml` fallback and the
+  `$FLASH_CONFIG` full-path override are unchanged.
+
 ## [0.5.1] - 2026-11-19
 
 ### Changed

@@ -11,7 +11,7 @@
 -- default profile (depth cycle 200/5000/unlimited/viewport). Further
 -- profiles need no packaging — bind them with their name, e.g.
 --   rex.bind("ctrl+s>g", "flash", { profile = "unlimited" })
--- Profiles live in ~/.config/flash/config.toml under
+-- Profiles live in ~/.config/cf-flash/config.toml under
 -- [profiles.<name>] (https://github.com/codingfragments/herdr-flash,
 -- doc/config-reference.md).
 --
@@ -84,7 +84,7 @@ end
 rex.action{
   name  = "flash",
   title = "flash",
-  description = "Open flash over the focused pane: scrollback view with jumps, selection, copy and insert. Optional profile (depth cycle) from ~/.config/flash/config.toml.",
+  description = "Open flash over the focused pane: scrollback view with jumps, selection, copy and insert. Optional profile (depth cycle) from ~/.config/cf-flash/config.toml.",
   args  = { profile = "string?" },
   run   = function(ctx, args)
     -- The source pane: what the user is looking at, read BEFORE the
