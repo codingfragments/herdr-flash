@@ -36,7 +36,7 @@ A binary installed with mise is only found if you also add a
 `lib/env.lua`; see [Environment](#environment-the-rex-cli-and-your-login-path)
 below.
 
-**3. Config** — `~/.config/flash/config.toml` serves both hosts. A
+**3. Config** — `~/.config/cf-flash/config.toml` serves both hosts. A
 `[host.rex]` table can override `scroll_follow` (forced `off` under Rex
 anyway — Rex scrolls client-side) and `key_debounce_ms` (0 by default
 under Rex if its keyboard mode delivers distinct events).

@@ -50,7 +50,7 @@ Optional — the plugin works with zero config, using the built-in
 `default` profile (`depths = ["200", "5000", "unlimited", "viewport"]`).
 To change the scrollback depth cycle, the label charset, the line-jump
 scheme, or the theme colors, copy [`config.example.toml`](config.example.toml)
-to `~/.config/flash/config.toml` (or `$XDG_CONFIG_HOME/flash/`, or any
+to `~/.config/cf-flash/config.toml` (or `$XDG_CONFIG_HOME/cf-flash/`, or any
 path you point `$FLASH_CONFIG` at; the old herdr location is still read
 as a fallback). `[host.<name>]` tables override `scroll_follow` /
 `key_debounce_ms` for one multiplexer only. Full schema:
@@ -74,7 +74,7 @@ matching the sister `herdr-zextract` port's philosophy — see
 
 ## Hosts
 
-One binary, one config (`~/.config/flash/config.toml`) under both
+One binary, one config (`~/.config/cf-flash/config.toml`) under both
 multiplexers: **Herdr** via the plugin manifest, **Rex** via the Lua
 launcher in [`rex/flash.lua`](rex/flash.lua).
 

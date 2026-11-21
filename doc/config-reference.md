@@ -6,8 +6,8 @@ first of these that exists wins:
 
 1. `$FLASH_CONFIG` — an explicit file. When set, it is the only place
    looked at.
-2. `$XDG_CONFIG_HOME/flash/config.toml` (absolute `XDG_CONFIG_HOME`
-   only), else `~/.config/flash/config.toml` — the normal location,
+2. `$XDG_CONFIG_HOME/cf-flash/config.toml` (absolute `XDG_CONFIG_HOME`
+   only), else `~/.config/cf-flash/config.toml` — the normal location,
    shared by every multiplexer the plugin runs under.
 3. `$HERDR_PLUGIN_CONFIG_DIR/config.toml` — the legacy herdr location
    (`herdr plugin config-dir herdr-flash`), read as a fallback so
